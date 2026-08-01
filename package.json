@@ -1,0 +1,51 @@
+{
+  "name": "alidocs-web-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP bridge for DingTalk Docs (alidocs) — exposes an already-open document page's editing tools to any MCP host over stdio. 钉钉文档交互式 MCP 服务：把浏览器里已打开的文档页面的编辑能力，桥接给任意 MCP host。",
+  "license": "MIT",
+  "main": "src/index.js",
+  "bin": {
+    "alidocs-web-mcp": "bin/alidocs-web-mcp.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./protocol": "./src/protocol/index.js",
+    "./protocol/crypto": "./src/protocol/crypto.js",
+    "./protocol/vectors.json": "./src/protocol/vectors.json",
+    "./test-helpers": "./__tests__/helpers/index.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "__tests__/helpers",
+    "docs",
+    "README.md",
+    "AGENT.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node bin/alidocs-web-mcp.js",
+    "start:write": "node bin/alidocs-web-mcp.js --allow-write",
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 __tests__/",
+    "test:unit": "node --test --test-concurrency=1 __tests__/unit.test.js",
+    "test:e2e": "node --test --test-concurrency=1 --test-timeout=60000 __tests__/bridge.e2e.test.js",
+    "lint": "node --check bin/alidocs-web-mcp.js && node -e \"require('fs').readdirSync('src',{recursive:true}).filter(f=>f.endsWith('.js')).forEach(f=>require('child_process').execSync('node --check src/'+f))\"",
+    "verify": "npm run lint && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "dingtalk",
+    "alidocs",
+    "websocket-bridge",
+    "ai-agent",
+    "document-editing"
+  ]
+}
