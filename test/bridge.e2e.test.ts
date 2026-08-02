@@ -80,6 +80,7 @@ it('未建桥时 tools/list 只有 bridge 自有工具', async () => {
     'get_bridge_status',
     'revoke_session',
     'call_page_tool',
+    'list_page_tools',
   ]);
 });
 
@@ -346,6 +347,7 @@ it('tools/list 合并 bridge 本地工具与页面工具', async () => {
     'get_bridge_status',
     'revoke_session',
     'call_page_tool',
+    'list_page_tools',
     'read_document',
     'update_block',
   ]);
@@ -738,4 +740,128 @@ it('resources/read 在未建桥时返回结构化 JSON-RPC 错误', async () => 
   const error = errorOf(response);
   expect(error.code).toBe(-32001);
   expect(error.data.code).toBe('PAGE_NOT_CONNECTED');
+});
+
+// ---- v3 版本协商与宿主画像（B1）----
+
+it('challenge 携带桥支持区间；无区间的 v2 页面协商到 2', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+  const { pairingCode } = await fetchPairingCode(env.host);
+
+  const client = await connectWs({
+    port: env.port,
+    origin: 'https://alidocs.dingtalk.com',
+  });
+  const challenge = await client.nextJson<ChallengeMessage>();
+  expect(challenge.protocolMin).toBe(2);
+  expect(challenge.protocolMax).toBe(3);
+  expect(typeof challenge.bridgeVersion).toBe('string');
+
+  const mac = computeMac(pairingCode, challenge.nonce);
+  // 老 v2 页面：docmcp=2 且不带 protocolMin/Max
+  client.sendJson({ docmcp: 2, type: 'auth', mac, client: {} });
+  const ready = await client.nextJson<ReadyMessage>();
+  expect(ready.type).toBe(CONTROL_TYPE.READY);
+  expect(ready.protocol).toBe(2);
+  expect(ready.docmcp).toBe(2);
+});
+
+it('声明 [3,3] 的 v3 页面协商到 3', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+  const { pairingCode } = await fetchPairingCode(env.host);
+
+  const client = await connectWs({
+    port: env.port,
+    origin: 'https://alidocs.dingtalk.com',
+  });
+  const challenge = await client.nextJson<ChallengeMessage>();
+  const mac = computeMac(pairingCode, challenge.nonce);
+  client.sendJson({
+    docmcp: 3,
+    type: 'auth',
+    mac,
+    client: { protocolMin: 3, protocolMax: 3, connectorVersion: '2.0.0' },
+  });
+  const ready = await client.nextJson<ReadyMessage>();
+  expect(ready.type).toBe(CONTROL_TYPE.READY);
+  expect(ready.protocol).toBe(3);
+});
+
+it('页面比桥新（[4,4]）→ PROTOCOL_MISMATCH + 关闭码 4004（提示升级桥）', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+  const { pairingCode } = await fetchPairingCode(env.host);
+
+  const client = await connectWs({
+    port: env.port,
+    origin: 'https://alidocs.dingtalk.com',
+  });
+  const challenge = await client.nextJson<ChallengeMessage>();
+  const mac = computeMac(pairingCode, challenge.nonce);
+  // mac 正确（持码真实页面），但协议区间超出桥支持窗口
+  client.sendJson({
+    docmcp: 4,
+    type: 'auth',
+    mac,
+    client: { protocolMin: 4, protocolMax: 4 },
+  });
+  const reply = await client.nextJson<ErrorMessage>();
+  expect(reply.type).toBe(CONTROL_TYPE.ERROR);
+  expect(reply.code).toBe('PROTOCOL_MISMATCH');
+  const closed = await client.waitClose();
+  expect(closed.code).toBe(4004);
+
+  const events = env.readAudit().map((entry) => entry.event);
+  expect(events.includes('session.protocol.mismatch')).toBeTruthy();
+});
+
+it('host-profile=standard 隐藏静态兜底工具（call_page_tool / list_page_tools）', async () => {
+  const env = await startTestBridge({ hostProfile: 'standard' });
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const response = await env.host.request('tools/list', {});
+  const names = resultOf<ToolsListResult>(response).tools.map(
+    (tool) => tool.name,
+  );
+  expect(names).not.toContain('call_page_tool');
+  expect(names).not.toContain('list_page_tools');
+  expect(names).toContain('get_pairing_code');
+});
+
+it('list_page_tools 以数据返回页面工具清单', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+  const { pairingCode } = await fetchPairingCode(env.host);
+  await connectFakePage({
+    port: env.port,
+    pairingCode,
+    tools: [
+      {
+        name: 'read_document',
+        description: 'read',
+        inputSchema: { type: 'object' },
+      },
+    ],
+  });
+  await env.host.waitNotification('notifications/tools/list_changed');
+
+  const response = await env.host.request('tools/call', {
+    name: 'list_page_tools',
+    arguments: {},
+  });
+  const result =
+    resultOf<ToolCallResult<{ ok: boolean; tools: { name: string }[] }>>(
+      response,
+    );
+  expect(result.structuredContent?.ok).toBe(true);
+  expect(result.structuredContent?.tools.map((tool) => tool.name)).toContain(
+    'read_document',
+  );
 });

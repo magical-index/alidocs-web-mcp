@@ -1,6 +1,8 @@
 {
   "_comment": "协议一致性向量 · 单一真源。bridge (node --test) 与页面侧 (jest) 两侧测试都加载本文件并断言各自实现与此一致，防止 drift。",
-  "protocolVersion": 2,
+  "protocolVersion": 3,
+  "protocolMin": 2,
+  "protocolMax": 3,
   "serviceId": "alidocs-web-mcp",
   "macAlgorithm": "sha256",
   "controlType": {
@@ -14,6 +16,7 @@
     "NORMAL": 1000,
     "MALFORMED": 4002,
     "AUTH_FAILED": 4003,
+    "PROTOCOL_MISMATCH": 4004,
     "SUPERSEDED": 4008,
     "HANDSHAKE_TIMEOUT": 4009
   },

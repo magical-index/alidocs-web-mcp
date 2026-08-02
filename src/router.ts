@@ -10,6 +10,11 @@
  */
 
 import { SERVICE_ID } from './protocol/index.js';
+import type { HostProfile } from './config.js';
+import {
+  PASSTHROUGH_TOOL_NAMES,
+  shouldExposeStaticTools,
+} from './hostProfile.js';
 
 export const LATEST_PROTOCOL_VERSION = '2025-06-18';
 export const SUPPORTED_PROTOCOL_VERSIONS = [
@@ -31,6 +36,8 @@ export const INSTRUCTIONS = [
   '3. 之后 tools/list 会出现文档工具（read_document / get_blocks / update_block 等），按标准 MCP 调用。',
   '页面刷新/跳转后由页面用 sessionStorage 里的配对码自动重连；若工具调用返回 PAGE_DISCONNECTED，稍候重试或重新配对。',
   '写工具产生的改动停留在 diffBlock 建议态，accept_all_changes / reject_all_changes 必须先获得用户明确许可。',
+  '若你的宿主在 server 启动后不刷新 tools/list（配对后仍看不到 read_document 等文档工具），',
+  '先调用 list_page_tools 查看页面当前可用的工具与参数，再用 call_page_tool 按名调用。',
 ].join('\n');
 
 /** 宽松的 JSON-RPC 消息形状：来自网络，字段都可能缺失 */
@@ -75,6 +82,8 @@ export interface RouterOptions {
   isPageConnected: () => boolean;
   localTools: ToolDefinition[];
   callLocalTool: (name: string, args: unknown) => Promise<ToolResult>;
+  /** 宿主动态工具画像（B1）：决定是否暴露静态兜底工具 */
+  hostProfile?: HostProfile;
   audit?: { write: (event: string, fields?: Record<string, unknown>) => void };
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
@@ -112,11 +121,18 @@ export class Router {
 
   private readonly log: NonNullable<RouterOptions['log']>;
 
+  private readonly hostProfile: HostProfile;
+
+  private readonly passthroughToolNames: Set<string>;
+
   private hostInitialized = false;
 
   private hostProtocolVersion: string = LATEST_PROTOCOL_VERSION;
 
   private hostCapabilities: Record<string, unknown> = {};
+
+  /** initialize 阶段据 clientInfo 判定；true=暴露静态兜底工具。默认 true（保守，见 hostProfile.ts） */
+  private exposeStaticTools = true;
 
   private idCounter = 0;
 
@@ -180,6 +196,8 @@ export class Router {
     this.localTools = options.localTools;
     this.localToolNames = new Set(options.localTools.map((tool) => tool.name));
     this.callLocalTool = options.callLocalTool;
+    this.hostProfile = options.hostProfile ?? 'auto';
+    this.passthroughToolNames = new Set(PASSTHROUGH_TOOL_NAMES);
     this.audit = options.audit ?? { write: () => {} };
     this.log = options.log ?? (() => {});
   }
@@ -296,6 +314,20 @@ export class Router {
     this.hostCapabilities =
       (params?.capabilities as Record<string, unknown>) || {};
 
+    // B1：据宿主 clientInfo 判定是否暴露静态兜底工具（默认按「不支持 list_changed」处理）
+    const clientInfo = params?.clientInfo as { name?: unknown } | undefined;
+    const clientName =
+      typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
+    this.exposeStaticTools = shouldExposeStaticTools(
+      this.hostProfile,
+      clientName,
+    );
+    this.log('宿主画像判定', {
+      client: clientName,
+      hostProfile: this.hostProfile,
+      exposeStaticTools: this.exposeStaticTools,
+    });
+
     return {
       protocolVersion: this.hostProtocolVersion,
       capabilities: {
@@ -331,7 +363,7 @@ export class Router {
     }
 
     if (!this.isPageConnected()) {
-      this.replyResult(id, { tools: this.localTools });
+      this.replyResult(id, { tools: this.visibleLocalTools() });
       return;
     }
 
@@ -342,7 +374,7 @@ export class Router {
       const pageTools = Array.isArray(result?.tools)
         ? (result.tools as ToolDefinition[])
         : [];
-      const merged = this.localTools.concat(
+      const merged = this.visibleLocalTools().concat(
         pageTools.filter((tool) => tool && !this.localToolNames.has(tool.name)),
       );
       const payload: Record<string, unknown> = { tools: merged };
@@ -353,7 +385,57 @@ export class Router {
       this.log('page tools/list 失败，降级为仅本地工具', {
         message: toMessage(error),
       });
-      this.replyResult(id, { tools: this.localTools });
+      this.replyResult(id, { tools: this.visibleLocalTools() });
+    }
+  }
+
+  /**
+   * tools/list 中实际列出的本地工具。
+   * 当宿主遵守 tools/list_changed（B1 判定为标准宿主）时，隐藏静态兜底工具
+   * （call_page_tool / list_page_tools），避免「同一操作两条路径」污染模型选择；
+   * 隐藏不影响可调用性——host 若仍按名调用，handleToolsCall 照常路由。
+   */
+  private visibleLocalTools(): ToolDefinition[] {
+    if (this.exposeStaticTools) return this.localTools;
+    return this.localTools.filter(
+      (tool) => !this.passthroughToolNames.has(tool.name),
+    );
+  }
+
+  /**
+   * 列出页面当前工具（数据形式），供 list_page_tools 兜底发现使用。
+   * 与 tools/list 不同：只返回**页面**工具的名字/描述/schema，不混入本地工具。
+   */
+  async listPageTools(): Promise<ToolResult> {
+    if (!this.isPageConnected()) {
+      return toolError(
+        'PAGE_NOT_CONNECTED',
+        [
+          '桥未建立：list_page_tools 需要已建桥的钉钉文档页面。',
+          '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
+        ].join('\n'),
+      );
+    }
+    try {
+      const result = (await this.requestPage('tools/list', {})) as
+        | { tools?: unknown }
+        | undefined;
+      const tools = Array.isArray(result?.tools) ? result.tools : [];
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({ ok: true, tools }, null, 2),
+          },
+        ],
+        structuredContent: { ok: true, tools },
+      };
+    } catch (error: unknown) {
+      this.log('list_page_tools 取页面工具失败', { message: toMessage(error) });
+      return toolError(
+        'PAGE_TOOL_ERROR',
+        `获取页面工具失败: ${toMessage(error)}`,
+      );
     }
   }
 

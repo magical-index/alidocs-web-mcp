@@ -21,6 +21,9 @@ Usage: alidocs-web-mcp [options]
                               '*' matches a single label/port only
   --only-origin <pattern>     Replace the default allowlist entirely (repeatable)
   --allow-write               Allow the page to register write tools (read-only by default)
+  --host-profile <p>          Host dynamic-tools profile: auto (default) | standard | static.
+                              'static' always exposes list_page_tools/call_page_tool for hosts
+                              that ignore tools/list_changed (e.g. Qoder); 'standard' hides them.
   --audit-log <path>          Audit log path (default ~/.alidocs-web-mcp/audit.log)
   --no-audit                  Disable the audit log
   --handshake-timeout-ms <n>  WS handshake deadline (default 10000)

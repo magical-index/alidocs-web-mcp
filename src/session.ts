@@ -12,10 +12,13 @@
 
 import {
   PROTOCOL_VERSION,
+  PROTOCOL_MIN,
+  PROTOCOL_MAX,
   CLOSE_CODE,
   CONTROL_TYPE,
   ERROR_CODE,
   isControlMessage,
+  negotiateProtocol,
   makeChallenge,
   makeReady,
   makeError,
@@ -40,6 +43,8 @@ export interface PageSession {
   id: string;
   origin: string;
   client: ClientSummary;
+  /** 协商生效的 wire 协议版本 */
+  protocol: number;
   startedAt: number;
   connection: SessionConnection;
 }
@@ -175,18 +180,23 @@ export class PageSessionManager {
       });
     };
 
-    // 主动下发 challenge（页面 onopen 后即可收到）
-    this.sendControl(connection, makeChallenge(nonce));
+    // 主动下发 challenge（页面 onopen 后即可收到），携带桥支持区间供页面协商
+    this.sendControl(
+      connection,
+      makeChallenge(nonce, { bridgeVersion: this.version }),
+    );
   }
 
-  /** 校验 auth{mac}：HMAC(secret, nonce) 通过则建会话 */
+  /** 校验 auth{mac}：HMAC(secret, nonce) 通过则协商版本、建会话 */
   private handleAuth(pending: PendingHandshake, message: unknown): void {
     const { connection, nonce } = pending;
-    if (
-      !isControlMessage(message) ||
-      message.type !== CONTROL_TYPE.AUTH ||
-      typeof message.mac !== 'string'
-    ) {
+    // 首帧宽松解析：只要形如 auth{ mac } 即受理（不按 docmcp 区间门控），
+    // 以便对「版本超窗」的页面回结构化 PROTOCOL_MISMATCH 而非笼统 BAD_MESSAGE。
+    const m =
+      message && typeof message === 'object'
+        ? (message as Record<string, unknown>)
+        : null;
+    if (!m || m.type !== CONTROL_TYPE.AUTH || typeof m.mac !== 'string') {
       this.sendControl(
         connection,
         makeError(ERROR_CODE.BAD_MESSAGE, '首帧必须是 auth{ mac }'),
@@ -195,7 +205,8 @@ export class PageSessionManager {
       return;
     }
 
-    if (!this.secretStore.verify(nonce, message.mac)) {
+    // 先验 mac：版本诊断只暴露给持有配对码的真实页面
+    if (!this.secretStore.verify(nonce, m.mac)) {
       this.auditWrite('session.auth.failed', { origin: connection.origin });
       this.sendControl(
         connection,
@@ -205,6 +216,38 @@ export class PageSessionManager {
         ),
       );
       connection.close(CLOSE_CODE.AUTH_FAILED, ERROR_CODE.AUTH_FAILED);
+      return;
+    }
+
+    // 版本协商（INV-1：页面比桥旧=常态，静默降级；无交集=桥过旧→PROTOCOL_MISMATCH）
+    const client =
+      m.client && typeof m.client === 'object'
+        ? (m.client as Record<string, unknown>)
+        : {};
+    const frameVersion = typeof m.docmcp === 'number' ? m.docmcp : PROTOCOL_MIN;
+    const peerMin = numberOr(client.protocolMin, PROTOCOL_MIN);
+    const peerMax = numberOr(client.protocolMax, frameVersion);
+    const negotiated = negotiateProtocol(peerMin, peerMax);
+    if (negotiated === null) {
+      this.auditWrite('session.protocol.mismatch', {
+        origin: connection.origin,
+        peerMin,
+        peerMax,
+        bridgeMin: PROTOCOL_MIN,
+        bridgeMax: PROTOCOL_MAX,
+      });
+      this.sendControl(
+        connection,
+        makeError(
+          ERROR_CODE.PROTOCOL_MISMATCH,
+          `页面协议区间 [${peerMin},${peerMax}] 与本桥 [${PROTOCOL_MIN},${PROTOCOL_MAX}] 无交集；` +
+            '本地桥过旧，请升级：npx -y @magical-index/alidocs-web-mcp@latest',
+        ),
+      );
+      connection.close(
+        CLOSE_CODE.PROTOCOL_MISMATCH,
+        ERROR_CODE.PROTOCOL_MISMATCH,
+      );
       return;
     }
 
@@ -229,7 +272,8 @@ export class PageSessionManager {
     const session: PageSession = {
       id: `s${this.sessionCounter}`,
       origin: connection.origin,
-      client: sanitizeClientInfo(message.client),
+      client: sanitizeClientInfo(client),
+      protocol: negotiated,
       startedAt: Date.now(),
       connection,
     };
@@ -240,6 +284,7 @@ export class PageSessionManager {
     this.auditWrite('session.open', {
       sessionId: session.id,
       origin: session.origin,
+      protocol: negotiated,
       client: session.client,
     });
 
@@ -249,6 +294,7 @@ export class PageSessionManager {
         sessionId: session.id,
         allowWrite: this.allowWrite,
         version: this.version,
+        protocol: negotiated,
       }),
     );
 
@@ -300,6 +346,11 @@ export function sanitizeClientInfo(client: unknown): ClientSummary {
     'readOnly',
     'toolCount',
     'context',
+    // v3 能力清单（诊断用）：连接器/编辑器版本、协商版本、灰度桶
+    'connectorVersion',
+    'editorVersion',
+    'protocol',
+    'gray',
   ];
   const result: ClientSummary = {};
   for (const key of pick) {
@@ -309,7 +360,20 @@ export function sanitizeClientInfo(client: unknown): ClientSummary {
       result[key] = value;
     }
   }
+  // caps 是字符串数组，折叠成逗号串以适配 ClientSummary 的原始类型
+  if (Array.isArray(source.caps)) {
+    const caps = source.caps
+      .filter((c): c is string => typeof c === 'string')
+      .slice(0, 32)
+      .join(',');
+    if (caps) result.caps = caps.slice(0, 200);
+  }
   return result;
+}
+
+/** 取数字，非数字回退到默认值 */
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 export { CLOSE_CODE };

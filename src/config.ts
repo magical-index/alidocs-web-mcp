@@ -35,12 +35,23 @@ export const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
   'http://127.0.0.1:*',
 ];
 
+/**
+ * 宿主对动态工具的支持画像（B1）：
+ * - `auto`（默认）：按 initialize 的 clientInfo 判断——已知遵守 tools/list_changed 的宿主走标准动态工具，
+ *   未知宿主按「不支持」处理并暴露静态兜底工具（已批准默认，功能正确性优先）。
+ * - `standard`：强制视为支持 list_changed，不暴露静态兜底工具。
+ * - `static`：强制暴露静态兜底工具（list_page_tools / call_page_tool）。
+ */
+export type HostProfile = 'auto' | 'standard' | 'static';
+
 export interface BridgeConfig {
   /** 显式 --port 时只用该端口；否则为 null（走候选集） */
   port: number | null;
   portCandidates: number[];
   allowedOrigins: string[];
   allowWrite: boolean;
+  /** 宿主动态工具支持画像（B1） */
+  hostProfile: HostProfile;
   /** WS 连接建立后等待 auth 帧的时限（S10 握手超时） */
   handshakeTimeoutMs: number;
   /** 转发给页面的请求超时（避免 agent 空等，S7） */
@@ -56,6 +67,7 @@ export const DEFAULTS: Omit<BridgeConfig, 'host'> = {
   portCandidates: [...DEFAULT_PORT_CANDIDATES],
   allowedOrigins: [...DEFAULT_ALLOWED_ORIGINS],
   allowWrite: false,
+  hostProfile: 'auto',
   handshakeTimeoutMs: 10 * 1000,
   requestTimeoutMs: 60 * 1000,
   auditLogPath: path.join(os.homedir(), '.alidocs-web-mcp', 'audit.log'),
@@ -104,6 +116,8 @@ export function parseArgs(argv: readonly string[]): BridgeConfig {
     allowedOrigins: [...DEFAULT_ALLOWED_ORIGINS],
     host: BIND_HOST,
   };
+  const isHostProfile = (v: string): v is HostProfile =>
+    v === 'auto' || v === 'standard' || v === 'static';
   const extraOrigins: string[] = [];
   let originsReplaced = false;
   let explicitPort: number | null = null;
@@ -134,6 +148,16 @@ export function parseArgs(argv: readonly string[]): BridgeConfig {
       case '--allow-write':
         config.allowWrite = true;
         break;
+      case '--host-profile': {
+        const value = next();
+        if (!isHostProfile(value)) {
+          throw new Error(
+            `--host-profile 非法: ${value}（可选 auto|standard|static）`,
+          );
+        }
+        config.hostProfile = value;
+        break;
+      }
       case '--audit-log':
         config.auditLogPath = next();
         break;

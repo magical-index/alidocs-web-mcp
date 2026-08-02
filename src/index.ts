@@ -126,6 +126,22 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
     },
     annotations: { readOnlyHint: false, openWorldHint: false },
   },
+  {
+    name: 'list_page_tools',
+    title: '列出页面工具（静态发现）',
+    description: [
+      '返回「当前已建桥页面」提供的文档工具清单（名字、描述、参数 schema），只读、以数据返回。',
+      '适用场景：部分 MCP host 不会随 notifications/tools/list_changed 刷新 tools/list，',
+      '导致页面配对后新出现的工具不可见。此时先用 list_page_tools 发现有哪些工具及其参数，',
+      '再用 call_page_tool 按名调用。未建桥时返回 PAGE_NOT_CONNECTED。',
+    ].join('\n'),
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
 ];
 
 /**
@@ -221,6 +237,7 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
     isPageConnected: () => sessions.connected,
     localTools: LOCAL_TOOLS,
     callLocalTool: (name, args) => callLocalTool(name, args),
+    hostProfile: config.hostProfile,
     audit,
     log,
   });
@@ -299,6 +316,10 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
         );
       }
       return router.callPageTool(toolName, toolArgs);
+    }
+
+    if (name === 'list_page_tools') {
+      return router.listPageTools();
     }
 
     if (name === 'get_pairing_code') {
