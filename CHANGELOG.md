@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **静态透传兜底工具 `call_page_tool`**：恒定出现在 `tools/list`，按 `{name, arguments}` 原样转发给页面。用于部分 MCP host 不响应 `notifications/tools/list_changed`、配对后仍看不到文档工具的场景。
+
+### 文档
+
+- README / 中文 README 增加 `call_page_tool` 说明与「部分 host 不刷新工具清单」的已知限制提示。
+
 ## [0.1.0] - 2026-08-01
 
 首个版本。

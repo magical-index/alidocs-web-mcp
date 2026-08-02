@@ -139,6 +139,38 @@ export class Router {
     return this.hostPending.size;
   }
 
+  /**
+   * 静态透传：按名字调用页面侧工具。
+   *
+   * 由 bridge 自有工具 `call_page_tool` 使用。即使 host 不响应
+   * `notifications/tools/list_changed`，该工具也恒定存在于 tools/list，
+   * 从而把「按名调用页面工具」的能力暴露给 host。
+   */
+  async callPageTool(name: string, args: unknown): Promise<ToolResult> {
+    if (!this.isPageConnected()) {
+      return toolError(
+        'PAGE_NOT_CONNECTED',
+        [
+          '桥未建立：call_page_tool 需要已建桥的钉钉文档页面。',
+          '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
+        ].join('\n'),
+      );
+    }
+    try {
+      const result = (await this.requestPage('tools/call', {
+        name,
+        arguments: args,
+      })) as ToolResult;
+      return result;
+    } catch (error: unknown) {
+      this.log('call_page_tool 转发失败', { message: toMessage(error) });
+      return toolError(
+        'PAGE_TOOL_ERROR',
+        `调用页面工具失败: ${toMessage(error)}`,
+      );
+    }
+  }
+
   constructor(options: RouterOptions) {
     this.version = options.version;
     this.requestTimeoutMs = options.requestTimeoutMs;

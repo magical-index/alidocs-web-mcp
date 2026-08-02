@@ -155,6 +155,7 @@ sequenceDiagram
 | `get_pairing_code` | 返回配对码（数据）、端口与写权限状态。**绝不返回脚本。** |
 | `get_bridge_status` | 端口、是否已配对、页面 MCP 会话是否就绪、在途请求数、Origin 白名单、审计日志路径。调用失败时先查这里。 |
 | `revoke_session` | 轮换配对码并断开会话，页面存的旧码立即失效。 |
+| `call_page_tool` | 静态透传兜底。部分 MCP host 在桥发送 `notifications/tools/list_changed` 后不会刷新工具清单，导致页面工具不可见。该工具恒定存在，只按 `{name, arguments}` 原样转发给页面，因此即使 host 的工具快照过期，也能直接调用 `read_document` / `insert_blocks` 等页面工具。 |
 
 ## CLI 参数
 
@@ -189,7 +190,7 @@ sequenceDiagram
 
 | 现象 | 可能原因 |
 | --- | --- |
-| `tools/list` 只有三个桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。 |
+| `tools/list` 只有桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。若页面已配对但 host 仍看不到文档工具，可能是 host 不刷新 `tools/list`，可用 `call_page_tool` 兜底。 |
 | `get_bridge_status` 一直 `connected: false` | 页面没有连接器（见[前置条件](#前置条件)），或页面所在 origin 不在白名单里。 |
 | `ORIGIN_REJECTED` | 你的文档 origin 未被放行，用 `--allow-origin` 加上。 |
 | `PORT_CONTENDED` | 三个候选端口都被占了。腾一个，或用 `--port` 指定。 |
@@ -229,7 +230,7 @@ import { startTestBridge, connectFakePage, readyOf } from 'alidocs-web-mcp/testi
 - 握手前发送的业务消息会被拒绝并关闭连接
 - 与页面侧的 HMAC 跨实现一致性，由共享测试向量钉住
 
-**尚未验证**：真实 MCP host 端到端消费本 server。此前开发用的是一个自建的最小 MCP 客户端，这也意味着 `notifications/tools/list_changed`（host 得知配对后文档工具出现的唯一途径）只被自动化测试里的假 host 覆盖过，没有在真实 host 上观测过。
+**已知限制**：少数 MCP host 在 server 启动时抓一次 `tools/list` 快照，之后不再响应桥发送的 `notifications/tools/list_changed`。如果你的 host 在页面配对后仍看不到文档工具，可使用桥自有的 `call_page_tool`，按名字调用 `read_document` / `insert_blocks` 等页面工具——桥仍原样转发参数，不解释文档语义。
 
 ## 文档
 

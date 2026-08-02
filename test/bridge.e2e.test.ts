@@ -79,6 +79,7 @@ it('未建桥时 tools/list 只有 bridge 自有工具', async () => {
     'get_pairing_code',
     'get_bridge_status',
     'revoke_session',
+    'call_page_tool',
   ]);
 });
 
@@ -95,6 +96,46 @@ it('未建桥时调用文档工具返回 isError + PAGE_NOT_CONNECTED（不挂�
   expect(result.isError).toBe(true);
   expect(result.structuredContent?.code).toBe('PAGE_NOT_CONNECTED');
   expect(result.content[0]?.text).toMatch(/get_pairing_code/);
+});
+
+it('未建桥时 call_page_tool 返回 isError + PAGE_NOT_CONNECTED', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const response = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: { name: 'read_document', arguments: {} },
+  });
+  const result = resultOf<ToolCallResult<{ code: string }>>(response);
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent?.code).toBe('PAGE_NOT_CONNECTED');
+});
+
+it('call_page_tool 参数校验拒绝空 name 或非对象 arguments', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const missingName = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: {},
+  });
+  expect(structuredOf<{ code: string }>(missingName).code).toBe(
+    'INVALID_PARAMS',
+  );
+
+  const emptyName = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: { name: '' },
+  });
+  expect(structuredOf<{ code: string }>(emptyName).code).toBe('INVALID_PARAMS');
+
+  const badArgs = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: { name: 'read_document', arguments: 'not-an-object' },
+  });
+  expect(structuredOf<{ code: string }>(badArgs).code).toBe('INVALID_PARAMS');
 });
 
 it('get_pairing_code 返回配对码数据（非脚本），默认只读', async () => {
@@ -304,6 +345,7 @@ it('tools/list 合并 bridge 本地工具与页面工具', async () => {
     'get_pairing_code',
     'get_bridge_status',
     'revoke_session',
+    'call_page_tool',
     'read_document',
     'update_block',
   ]);
@@ -348,6 +390,91 @@ it('tools/call 透传到页面并把结果原样回给 host（id 重映射）', 
   );
   expect(forwarded?.id).not.toBe(response.id);
   expect(String(forwarded?.id)).toMatch(/^h\d+$/);
+});
+
+it('call_page_tool 把调用原样转发给页面并返回结果', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const { pairingCode } = await fetchPairingCode(env.host);
+  const page = await connectFakePage({ port: env.port, pairingCode });
+  await env.host.waitNotification('notifications/tools/list_changed');
+
+  page.client.onmessage = (text) => {
+    const message = JSON.parse(text) as HostMessage & { docmcp?: number };
+    if (message.docmcp || !message.method) return;
+    page.requests.push(message);
+    if (message.method === 'tools/call') {
+      const params = message.params as {
+        name?: string;
+        arguments?: { uuid?: string };
+      };
+      page.client.sendJson({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: `via-proxy:${params.name}:${params.arguments?.uuid}`,
+            },
+          ],
+        },
+      });
+    }
+  };
+
+  const response = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: { name: 'read_document', arguments: { uuid: 'block-2' } },
+  });
+  expect(resultOf<ToolCallResult>(response).content[0]?.text).toBe(
+    'via-proxy:read_document:block-2',
+  );
+
+  const forwarded = page.requests.find(
+    (request) => request.method === 'tools/call',
+  );
+  if (!forwarded) throw new Error('未收到 tools/call 转发');
+  const params = forwarded.params;
+  if (!params) throw new Error('转发请求缺少 params');
+  expect(params.name).toBe('read_document');
+  expect((params.arguments as { uuid: string }).uuid).toBe('block-2');
+});
+
+it('call_page_tool 转发页面工具返回的 isError 结果', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const { pairingCode } = await fetchPairingCode(env.host);
+  const page = await connectFakePage({ port: env.port, pairingCode });
+  await env.host.waitNotification('notifications/tools/list_changed');
+
+  page.client.onmessage = (text) => {
+    const message = JSON.parse(text) as HostMessage & { docmcp?: number };
+    if (message.docmcp || !message.method) return;
+    if (message.method === 'tools/call') {
+      page.client.sendJson({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          isError: true,
+          content: [{ type: 'text', text: 'page says no' }],
+          structuredContent: { ok: false, code: 'PAGE_DENIED' },
+        },
+      });
+    }
+  };
+
+  const response = await env.host.request('tools/call', {
+    name: 'call_page_tool',
+    arguments: { name: 'update_block', arguments: {} },
+  });
+  const result = resultOf<ToolCallResult<{ code: string }>>(response);
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent?.code).toBe('PAGE_DENIED');
 });
 
 it('页面侧通知原样上抛 host', async () => {

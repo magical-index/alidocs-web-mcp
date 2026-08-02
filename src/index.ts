@@ -9,6 +9,7 @@
  * - get_pairing_code：以「数据」下发配对码（高熵 secret），供页面填入配对框（S13：不返回可执行代码）
  * - get_bridge_status：桥状态与结构化诊断
  * - revoke_session：轮换密钥并断开当前会话（S11 撤销）
+ * - call_page_tool：静态透传兜底；部分 host 不刷新 tools/list，可用它显式调用页面工具
  */
 
 import * as fs from 'node:fs';
@@ -92,6 +93,35 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, openWorldHint: false },
+  },
+  {
+    name: 'call_page_tool',
+    title: '调用页面工具（静态透传）',
+    description: [
+      '显式按名字调用一个由已建桥页面提供的文档工具。',
+      '适用场景：部分 MCP host 在 server 启动后不会刷新 tools/list（不响应 notifications/tools/list_changed），',
+      '因此页面配对后新出现的 read_document / insert_blocks 等工具对 host 不可见。',
+      'call_page_tool 恒定出现在 tools/list 中，它只按 name 与 arguments 原样转发给页面，',
+      '桥仍不理解工具语义（A10 哑管道约束）。',
+      '未建桥时返回 PAGE_NOT_CONNECTED。',
+    ].join('\n'),
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            '要调用的页面侧工具名，例如 read_document、insert_blocks。',
+        },
+        arguments: {
+          type: 'object',
+          description: '传给该页面工具的参数对象。',
+        },
+      },
+      required: ['name'],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, openWorldHint: false },
@@ -249,7 +279,28 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
     name: string,
     args: unknown,
   ): Promise<ToolResult> {
-    void args;
+    if (name === 'call_page_tool') {
+      const payload = args as { name?: unknown; arguments?: unknown };
+      const toolName =
+        typeof payload.name === 'string' && payload.name.length > 0
+          ? payload.name
+          : null;
+      if (toolName === null) {
+        return toolError(
+          'INVALID_PARAMS',
+          'call_page_tool 需要非空字符串参数 name',
+        );
+      }
+      const toolArgs = payload.arguments === undefined ? {} : payload.arguments;
+      if (typeof toolArgs !== 'object' || toolArgs === null) {
+        return toolError(
+          'INVALID_PARAMS',
+          'call_page_tool 的 arguments 必须是对象',
+        );
+      }
+      return router.callPageTool(toolName, toolArgs);
+    }
+
     if (name === 'get_pairing_code') {
       if (listeningPort === null) {
         return toolError('BRIDGE_NOT_LISTENING', 'bridge 尚未开始监听端口');

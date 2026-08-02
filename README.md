@@ -155,6 +155,7 @@ Everything else you see in `tools/list` comes from the page; the bridge only for
 | `get_pairing_code` | Returns the pairing code (data) plus the port and write-permission state. **Never returns a script.** |
 | `get_bridge_status` | Port, whether a page is paired, whether its MCP session is ready, in-flight requests, Origin allowlist, audit log path. Start here when a call fails. |
 | `revoke_session` | Rotates the pairing code and drops the session. Anything the page stored becomes invalid immediately. |
+| `call_page_tool` | Static passthrough. Some MCP hosts do not refresh `tools/list` after the bridge notifies them that page tools appeared. This tool is always present and forwards `{name, arguments}` to the page verbatim, so you can still call `read_document` / `insert_blocks` etc. even when the host's tool snapshot is stale. |
 
 ## CLI options
 
@@ -189,7 +190,7 @@ Full threat model and the S1–S13 control list: **[docs/security.md](./docs/sec
 
 | Symptom | Likely cause |
 | --- | --- |
-| `tools/list` only shows the three bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. |
+| `tools/list` only shows the bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. If the page is paired but the host still does not see document tools, the host may not refresh `tools/list`; use `call_page_tool` as a fallback. |
 | `get_bridge_status` shows `connected: false` forever | The page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
 | `ORIGIN_REJECTED` | Your document origin is not allowlisted. Add it with `--allow-origin`. |
 | `PORT_CONTENDED` | All three candidate ports are taken. Free one, or pass `--port`. |
@@ -229,7 +230,7 @@ Early (0.x). Verified today:
 - Business messages sent before the handshake are rejected and the socket closed
 - Cross-implementation HMAC agreement with the page side, pinned by shared test vectors
 
-**Not yet verified:** a real MCP host consuming this server end to end. Development so far used a purpose-built minimal MCP client, which also means the `notifications/tools/list_changed` path — how a host learns that document tools appeared after pairing — has only been covered by automated tests with a fake host, not observed against a real one.
+**Known limitation:** a small number of MCP hosts take a snapshot of `tools/list` at server startup and do not update it when the bridge sends `notifications/tools/list_changed`. If your host does not see page tools after pairing, use the bridge's own `call_page_tool` to invoke them by name (`read_document`, `insert_blocks`, etc.) — the bridge still forwards arguments verbatim and never interprets document semantics.
 
 ## Documentation
 
