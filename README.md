@@ -44,7 +44,17 @@ The capability you actually want — structured, block-level editing that render
 
 ## Install & run
 
-Register it with your MCP host — no global install needed:
+**One-click install** (checks Node, warms the npx cache, registers the MCP server):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh
+# allow write tools:
+curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh -s -- --allow-write
+```
+
+It auto-registers into **Claude Code** (`claude mcp add --scope user`) when the `claude` CLI is present, and prints a paste-ready JSON snippet for **Qoder** (Settings → MCP → **+ Add**). Run `install.sh --help` for options (`--name`, `--force`, `--skip-verify`).
+
+Or register it with your MCP host manually — no global install needed:
 
 ```json
 {

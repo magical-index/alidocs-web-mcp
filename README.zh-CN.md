@@ -44,7 +44,17 @@
 
 ## 安装与运行
 
-注册到你的 MCP host，无需全局安装：
+**一键安装**（校验 Node、预热 npx 缓存、注册 MCP server）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh
+# 允许写工具：
+curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh -s -- --allow-write
+```
+
+检测到 `claude` CLI 时会自动注册进 **Claude Code**（`claude mcp add --scope user`），并为 **Qoder** 打印可直接粘贴的 JSON 片段（Settings → MCP → **+ Add**）。更多选项见 `install.sh --help`（`--name`、`--force`、`--skip-verify`）。
+
+或手动注册到你的 MCP host，无需全局安装：
 
 ```json
 {
