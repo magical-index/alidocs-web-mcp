@@ -11,30 +11,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['18', '20', '22']
+        # 22 = Maintenance LTS（engines 下限，require(esm) 自 22.12 起可用）
+        # 24 = Active LTS；26 = Current。18/20 已 EOL，不再支持
+        node: ['22', '24', '26']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
 
-      # 本项目零依赖（运行时与开发期均无），故不需要 install 步骤
-      - name: Assert zero dependencies
-        run: |
-          node -e "
-            const p = require('./package.json');
-            const rt = Object.keys(p.dependencies || {});
-            const dev = Object.keys(p.devDependencies || {});
-            if (rt.length || dev.length) {
-              console.error('本项目必须保持零依赖（见 AGENT.md A1）:', { rt, dev });
-              process.exit(1);
-            }
-            console.log('zero-dependency OK');
-          "
+      # npm ci 会触发 prepare → build，产物在测试前就已就位
+      - name: Install
+        run: npm ci
 
-      - name: Lint (syntax check)
+      - name: Lint & format check (Biome)
         run: npm run lint
 
+      - name: Typecheck (src + test)
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      # 单元/e2e 测 src；artifact.test.ts 测编译产物（零运行时依赖、shebang、
+      # exports 完整性、真实 CLI 进程握手）——产物断言都在测试里，CI 不再重复写脚本
       - name: Test
         run: npm test
+
+      - name: Package checks (publint + are-the-types-wrong)
+        run: npm run check:package

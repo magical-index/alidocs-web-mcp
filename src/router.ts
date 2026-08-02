@@ -1,27 +1,29 @@
-'use strict';
-
 /**
  * stdio ↔ WS 的 JSON-RPC 路由。
  *
  * 设计要点（详见 docs/design.md）：
- * - **哑管道**：除 MCP 会话生命周期（initialize / 能力协商）与 bridge 自有的两个本地工具外，
+ * - **哑管道**：除 MCP 会话生命周期（initialize / 能力协商）与 bridge 自有工具外，
  *   一切请求原样转发给页面，bridge 不理解文档工具语义
  * - **id 重映射**：三条来源各自加前缀（h=host→page，b=bridge→page，p=page→host），
  *   避免 id 撞车，也保证断连时能精准回收
  * - **不挂起**：页面未连接 / 超时 / 断桥时立即返回结构化错误（S7），agent 不空等
  */
 
-const { SERVICE_ID } = require('./protocol/index');
+import { SERVICE_ID } from './protocol/index.js';
 
-const LATEST_PROTOCOL_VERSION = '2025-06-18';
-const SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+export const LATEST_PROTOCOL_VERSION = '2025-06-18';
+export const SUPPORTED_PROTOCOL_VERSIONS = [
+  '2025-06-18',
+  '2025-03-26',
+  '2024-11-05',
+];
 
 /** JSON-RPC 自定义错误码：桥不可用（区别于协议层错误） */
-const ERROR_BRIDGE_UNAVAILABLE = -32001;
+export const ERROR_BRIDGE_UNAVAILABLE = -32001;
 const ERROR_METHOD_NOT_FOUND = -32601;
 const ERROR_INVALID_PARAMS = -32602;
 
-const INSTRUCTIONS = [
+export const INSTRUCTIONS = [
   '本 server 是钉钉文档（alidocs）的本地 MCP 桥。文档工具由「当前已建桥的文档页面」提供，',
   '因此接入分三步：',
   '1. 调用 get_pairing_code 获取配对码（字符串数据，不是脚本）；',
@@ -31,21 +33,113 @@ const INSTRUCTIONS = [
   '写工具产生的改动停留在 diffBlock 建议态，accept_all_changes / reject_all_changes 必须先获得用户明确许可。',
 ].join('\n');
 
-class Router {
-  /**
-   * @param {{
-   *   version: string,
-   *   requestTimeoutMs: number,
-   *   sendToHost: (message: object) => void,
-   *   sendToPage: (message: object) => boolean,
-   *   isPageConnected: () => boolean,
-   *   localTools: object[],
-   *   callLocalTool: (name: string, args: unknown) => Promise<object>,
-   *   audit?: { write: (event: string, fields?: object) => void },
-   *   log?: (message: string, fields?: object) => void,
-   * }} options
-   */
-  constructor(options) {
+/** 宽松的 JSON-RPC 消息形状：来自网络，字段都可能缺失 */
+export interface JsonRpcMessage {
+  jsonrpc?: string;
+  id?: string | number;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: unknown;
+  error?: { code: number; message: string; data?: unknown };
+}
+
+export interface ToolDefinition {
+  name: string;
+  [key: string]: unknown;
+}
+
+/**
+ * JSON-RPC `error.data` 里的结构化诊断（S7）。
+ *
+ * agent 拿到的不只是一句错误文案，而是可判定的 `code` 与可执行的 `hint`。
+ */
+export type BridgeErrorData = {
+  code: string;
+  hint?: string;
+  /** 超时时带上原请求方法名，便于定位 */
+  method?: string;
+};
+
+export interface ToolResult {
+  isError?: boolean;
+  content?: unknown[];
+  structuredContent?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface RouterOptions {
+  version: string;
+  requestTimeoutMs: number;
+  sendToHost: (message: JsonRpcMessage) => void;
+  sendToPage: (message: JsonRpcMessage) => boolean;
+  isPageConnected: () => boolean;
+  localTools: ToolDefinition[];
+  callLocalTool: (name: string, args: unknown) => Promise<ToolResult>;
+  audit?: { write: (event: string, fields?: Record<string, unknown>) => void };
+  log?: (message: string, fields?: Record<string, unknown>) => void;
+}
+
+interface HostPendingEntry {
+  hostId: string | number | undefined;
+  method: string | undefined;
+  timer: NodeJS.Timeout;
+}
+
+interface BridgePendingEntry {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+export class Router {
+  private readonly version: string;
+
+  private readonly requestTimeoutMs: number;
+
+  private readonly sendToHost: RouterOptions['sendToHost'];
+
+  private readonly sendToPage: RouterOptions['sendToPage'];
+
+  private readonly isPageConnected: () => boolean;
+
+  private readonly localTools: ToolDefinition[];
+
+  private readonly localToolNames: Set<string>;
+
+  private readonly callLocalTool: RouterOptions['callLocalTool'];
+
+  private readonly audit: NonNullable<RouterOptions['audit']>;
+
+  private readonly log: NonNullable<RouterOptions['log']>;
+
+  private hostInitialized = false;
+
+  private hostProtocolVersion: string = LATEST_PROTOCOL_VERSION;
+
+  private hostCapabilities: Record<string, unknown> = {};
+
+  private idCounter = 0;
+
+  /** host→page 在途请求：bridgeId -> { hostId, method, timer } */
+  private readonly hostPending = new Map<string, HostPendingEntry>();
+
+  /** bridge→page 在途请求：bridgeId -> { resolve, reject, timer } */
+  private readonly bridgePending = new Map<string, BridgePendingEntry>();
+
+  /** page→host 在途请求：bridgeId -> { pageId } */
+  private readonly pagePending = new Map<
+    string,
+    { pageId: string | number | undefined }
+  >();
+
+  pageReady = false;
+
+  /** 在途的 host→page 请求数（诊断用，避免外部直接触碰内部 Map） */
+  get pendingHostRequestCount(): number {
+    return this.hostPending.size;
+  }
+
+  constructor(options: RouterOptions) {
     this.version = options.version;
     this.requestTimeoutMs = options.requestTimeoutMs;
     this.sendToHost = options.sendToHost;
@@ -54,26 +148,11 @@ class Router {
     this.localTools = options.localTools;
     this.localToolNames = new Set(options.localTools.map((tool) => tool.name));
     this.callLocalTool = options.callLocalTool;
-    this.audit = options.audit || { write: () => {} };
-    this.log = options.log || (() => {});
-
-    this.hostInitialized = false;
-    this.hostProtocolVersion = LATEST_PROTOCOL_VERSION;
-    this.hostCapabilities = {};
-    this.hostClientInfo = null;
-
-    this.idCounter = 0;
-    /** host→page 在途请求：bridgeId -> { hostId, method, timer } */
-    this.hostPending = new Map();
-    /** bridge→page 在途请求：bridgeId -> { resolve, reject, timer } */
-    this.bridgePending = new Map();
-    /** page→host 在途请求：bridgeId -> { pageId } */
-    this.pagePending = new Map();
-
-    this.pageReady = false;
+    this.audit = options.audit ?? { write: () => {} };
+    this.log = options.log ?? (() => {});
   }
 
-  nextId(prefix) {
+  private nextId(prefix: string): string {
     this.idCounter += 1;
     return `${prefix}${this.idCounter}`;
   }
@@ -81,42 +160,46 @@ class Router {
   // ---------- host（stdio）方向 ----------
 
   /** 处理来自 MCP host 的一条 JSON-RPC 消息 */
-  handleHostMessage(message) {
+  handleHostMessage(message: unknown): void {
     if (!message || typeof message !== 'object') return;
+    const msg = message as JsonRpcMessage;
 
     // host 对「page→host 请求」的响应：换回 page 的原 id 后回传
-    if (isResponse(message)) {
-      const entry = this.pagePending.get(String(message.id));
+    if (isResponse(msg)) {
+      const entry = this.pagePending.get(String(msg.id));
       if (!entry) {
-        this.log('丢弃无主的 host 响应', { id: message.id });
+        this.log('丢弃无主的 host 响应', { id: msg.id });
         return;
       }
-      this.pagePending.delete(String(message.id));
-      this.sendToPage({ ...message, id: entry.pageId });
+      this.pagePending.delete(String(msg.id));
+      this.sendToPage({ ...msg, id: entry.pageId });
       return;
     }
 
-    if (isNotification(message)) {
-      this.handleHostNotification(message);
+    if (isNotification(msg)) {
+      this.handleHostNotification(msg);
       return;
     }
 
-    this.handleHostRequest(message).catch((error) => {
+    this.handleHostRequest(msg).catch((error: unknown) => {
       this.replyError(
-        message.id,
+        msg.id,
         ERROR_BRIDGE_UNAVAILABLE,
-        `bridge 内部错误: ${error && error.message ? error.message : String(error)}`,
+        `bridge 内部错误: ${toMessage(error)}`,
       );
     });
   }
 
-  handleHostNotification(message) {
+  private handleHostNotification(message: JsonRpcMessage): void {
     if (message.method === 'notifications/initialized') {
       this.hostInitialized = true;
       return;
     }
     if (message.method === 'notifications/cancelled') {
-      const requestId = message.params && message.params.requestId;
+      const requestId = message.params?.requestId as
+        | string
+        | number
+        | undefined;
       const bridgeId = this.findBridgeIdByHostId(requestId);
       if (bridgeId) {
         const entry = this.hostPending.get(bridgeId);
@@ -125,7 +208,7 @@ class Router {
           ...message,
           params: { ...message.params, requestId: bridgeId },
         });
-        this.log('取消已转发的请求', { method: entry && entry.method });
+        this.log('取消已转发的请求', { method: entry?.method });
       }
       return;
     }
@@ -133,7 +216,7 @@ class Router {
     this.forwardToPage(message);
   }
 
-  async handleHostRequest(message) {
+  private async handleHostRequest(message: JsonRpcMessage): Promise<void> {
     const { method, id } = message;
 
     if (method === 'initialize') {
@@ -157,7 +240,8 @@ class Router {
     if (!this.isPageConnected()) {
       this.replyError(
         id,
-        method.startsWith('resources/') || method.startsWith('prompts/')
+        method &&
+          (method.startsWith('resources/') || method.startsWith('prompts/'))
           ? ERROR_BRIDGE_UNAVAILABLE
           : ERROR_METHOD_NOT_FOUND,
         '页面未建桥，该能力由文档页面提供',
@@ -168,13 +252,17 @@ class Router {
     this.forwardHostRequest(message);
   }
 
-  buildInitializeResult(params) {
-    const requested = params && params.protocolVersion;
-    this.hostProtocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
-      ? requested
-      : LATEST_PROTOCOL_VERSION;
-    this.hostCapabilities = (params && params.capabilities) || {};
-    this.hostClientInfo = (params && params.clientInfo) || null;
+  private buildInitializeResult(
+    params: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    const requested = params?.protocolVersion;
+    this.hostProtocolVersion =
+      typeof requested === 'string' &&
+      SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+        ? requested
+        : LATEST_PROTOCOL_VERSION;
+    this.hostCapabilities =
+      (params?.capabilities as Record<string, unknown>) || {};
 
     return {
       protocolVersion: this.hostProtocolVersion,
@@ -192,11 +280,11 @@ class Router {
     };
   }
 
-  async handleToolsList(message) {
+  private async handleToolsList(message: JsonRpcMessage): Promise<void> {
     const { id, params } = message;
 
     // 带 cursor 的翻页请求语义属于页面，原样转发，不再混入本地工具
-    if (params && params.cursor) {
+    if (params?.cursor) {
       if (!this.isPageConnected()) {
         this.replyError(
           id,
@@ -216,47 +304,60 @@ class Router {
     }
 
     try {
-      const result = await this.requestPage('tools/list', {});
-      const pageTools = Array.isArray(result && result.tools) ? result.tools : [];
+      const result = (await this.requestPage('tools/list', {})) as
+        | { tools?: unknown; nextCursor?: unknown }
+        | undefined;
+      const pageTools = Array.isArray(result?.tools)
+        ? (result.tools as ToolDefinition[])
+        : [];
       const merged = this.localTools.concat(
         pageTools.filter((tool) => tool && !this.localToolNames.has(tool.name)),
       );
-      const payload = { tools: merged };
-      if (result && result.nextCursor) payload.nextCursor = result.nextCursor;
+      const payload: Record<string, unknown> = { tools: merged };
+      if (result?.nextCursor) payload.nextCursor = result.nextCursor;
       this.replyResult(id, payload);
-    } catch (error) {
+    } catch (error: unknown) {
       // 取页面工具失败不应让 tools/list 整体失败：至少返回本地工具 + 诊断
       this.log('page tools/list 失败，降级为仅本地工具', {
-        message: error && error.message,
+        message: toMessage(error),
       });
       this.replyResult(id, { tools: this.localTools });
     }
   }
 
-  async handleToolsCall(message) {
+  private async handleToolsCall(message: JsonRpcMessage): Promise<void> {
     const { id, params } = message;
-    const name = params && params.name;
+    const name = params?.name as string | undefined;
 
     // S9 审计：只记工具名与参数 key，不记参数值
     this.audit.write('tool.call', {
       tool: name,
-      target: this.localToolNames.has(name) ? 'bridge' : 'page',
-      argKeys: safeArgKeys(params && params.arguments),
+      target: name && this.localToolNames.has(name) ? 'bridge' : 'page',
+      argKeys: safeArgKeys(params?.arguments),
       pageConnected: this.isPageConnected(),
     });
 
-    if (this.localToolNames.has(name)) {
-      const result = await this.callLocalTool(name, (params && params.arguments) || {});
+    if (name && this.localToolNames.has(name)) {
+      const result = await this.callLocalTool(
+        name,
+        (params?.arguments as unknown) || {},
+      );
       this.replyResult(id, result);
       return;
     }
 
     if (!this.isPageConnected()) {
       // 工具执行层错误用 isError 结果表达，便于 agent 读到自愈指引
-      this.replyResult(id, toolError('PAGE_NOT_CONNECTED', [
-        '桥未建立：文档工具由已建桥的钉钉文档页面提供。',
-        '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
-      ].join('\n')));
+      this.replyResult(
+        id,
+        toolError(
+          'PAGE_NOT_CONNECTED',
+          [
+            '桥未建立：文档工具由已建桥的钉钉文档页面提供。',
+            '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
+          ].join('\n'),
+        ),
+      );
       return;
     }
 
@@ -266,22 +367,23 @@ class Router {
   // ---------- page（WS）方向 ----------
 
   /** 处理来自页面的一条 JSON-RPC 消息 */
-  handlePageMessage(message) {
+  handlePageMessage(message: unknown): void {
     if (!message || typeof message !== 'object') return;
+    const msg = message as JsonRpcMessage;
 
-    if (isResponse(message)) {
-      const key = String(message.id);
+    if (isResponse(msg)) {
+      const key = String(msg.id);
 
       const bridgeEntry = this.bridgePending.get(key);
       if (bridgeEntry) {
         this.bridgePending.delete(key);
         clearTimeout(bridgeEntry.timer);
-        if (message.error) {
+        if (msg.error) {
           bridgeEntry.reject(
-            new Error(message.error.message || 'page returned error'),
+            new Error(msg.error.message || 'page returned error'),
           );
         } else {
-          bridgeEntry.resolve(message.result);
+          bridgeEntry.resolve(msg.result);
         }
         return;
       }
@@ -289,28 +391,28 @@ class Router {
       const hostEntry = this.hostPending.get(key);
       if (hostEntry) {
         this.clearHostPending(key);
-        this.sendToHost({ ...message, id: hostEntry.hostId });
+        this.sendToHost({ ...msg, id: hostEntry.hostId });
         return;
       }
 
-      this.log('丢弃无主的 page 响应', { id: message.id });
+      this.log('丢弃无主的 page 响应', { id: msg.id });
       return;
     }
 
-    if (isNotification(message)) {
+    if (isNotification(msg)) {
       // list_changed / resources/updated / message 等原样上抛
-      this.sendToHost(message);
+      this.sendToHost(msg);
       return;
     }
 
     // 页面反向请求（sampling / roots / elicitation）：换 id 后转给 host
     const bridgeId = this.nextId('p');
-    this.pagePending.set(bridgeId, { pageId: message.id });
-    this.sendToHost({ ...message, id: bridgeId });
+    this.pagePending.set(bridgeId, { pageId: msg.id });
+    this.sendToHost({ ...msg, id: bridgeId });
   }
 
   /** 页面会话建立：bridge 作为 MCP client 完成对页面的 initialize，然后通知 host 刷新工具 */
-  async handlePageOpen(session) {
+  async handlePageOpen(session?: { id?: string }): Promise<void> {
     this.pageReady = false;
     try {
       await this.requestPage('initialize', {
@@ -323,18 +425,18 @@ class Router {
       });
       this.sendToPage({ jsonrpc: '2.0', method: 'notifications/initialized' });
       this.pageReady = true;
-      this.log('页面 MCP 会话就绪', { sessionId: session && session.id });
-    } catch (error) {
-      this.log('页面 initialize 失败', { message: error && error.message });
+      this.log('页面 MCP 会话就绪', { sessionId: session?.id });
+    } catch (error: unknown) {
+      this.log('页面 initialize 失败', { message: toMessage(error) });
     }
     this.notifyToolsListChanged();
   }
 
   /** 页面会话断开：回收在途请求（结构化错误，不挂起），并让 host 刷新工具列表 */
-  handlePageClose(session, info) {
+  handlePageClose(session?: { id?: string }, info?: { code?: number }): void {
     this.pageReady = false;
     const reason =
-      info && info.code === 4008 ? 'PAGE_SUPERSEDED' : 'PAGE_DISCONNECTED';
+      info?.code === 4008 ? 'PAGE_SUPERSEDED' : 'PAGE_DISCONNECTED';
 
     for (const [bridgeId, entry] of this.hostPending) {
       clearTimeout(entry.timer);
@@ -356,14 +458,14 @@ class Router {
     }
     this.pagePending.clear();
 
-    this.log('页面会话关闭', { sessionId: session && session.id, reason });
+    this.log('页面会话关闭', { sessionId: session?.id, reason });
     this.notifyToolsListChanged();
   }
 
   // ---------- 转发与应答工具 ----------
 
   /** 把 host 请求转发给页面并登记在途（含超时兜底） */
-  forwardHostRequest(message) {
+  private forwardHostRequest(message: JsonRpcMessage): void {
     const bridgeId = this.nextId('h');
     const timer = setTimeout(() => {
       this.clearHostPending(bridgeId);
@@ -402,8 +504,11 @@ class Router {
   }
 
   /** bridge 自身向页面发请求（initialize / tools/list 合并） */
-  requestPage(method, params) {
-    return new Promise((resolve, reject) => {
+  requestPage(
+    method: string,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
       const bridgeId = this.nextId('b');
       const timer = setTimeout(() => {
         this.bridgePending.delete(bridgeId);
@@ -426,12 +531,12 @@ class Router {
     });
   }
 
-  forwardToPage(message) {
+  private forwardToPage(message: JsonRpcMessage): boolean {
     if (!this.isPageConnected()) return false;
     return this.sendToPage(message);
   }
 
-  notifyToolsListChanged() {
+  private notifyToolsListChanged(): void {
     if (!this.hostInitialized) return;
     this.sendToHost({
       jsonrpc: '2.0',
@@ -439,31 +544,41 @@ class Router {
     });
   }
 
-  clearHostPending(bridgeId) {
+  private clearHostPending(bridgeId: string): void {
     const entry = this.hostPending.get(bridgeId);
     if (!entry) return;
     clearTimeout(entry.timer);
     this.hostPending.delete(bridgeId);
   }
 
-  findBridgeIdByHostId(hostId) {
+  private findBridgeIdByHostId(
+    hostId: string | number | undefined,
+  ): string | null {
     for (const [bridgeId, entry] of this.hostPending) {
       if (String(entry.hostId) === String(hostId)) return bridgeId;
     }
     return null;
   }
 
-  replyResult(id, result) {
+  private replyResult(id: string | number | undefined, result: unknown): void {
     this.sendToHost({ jsonrpc: '2.0', id, result });
   }
 
-  replyError(id, code, message, data) {
-    const error = { code, message };
+  private replyError(
+    id: string | number | undefined,
+    code: number,
+    message: string,
+    data?: unknown,
+  ): void {
+    const error: { code: number; message: string; data?: unknown } = {
+      code,
+      message,
+    };
     if (data) error.data = data;
     this.sendToHost({ jsonrpc: '2.0', id, error });
   }
 
-  disconnectedData(code) {
+  private disconnectedData(code?: string): BridgeErrorData {
     return {
       code: code || 'PAGE_NOT_CONNECTED',
       hint: '调用 get_pairing_code 获取配对码，在钉钉文档页配对框填入后重试',
@@ -471,7 +586,7 @@ class Router {
   }
 
   /** 释放全部定时器（进程退出时调用） */
-  dispose() {
+  dispose(): void {
     for (const [, entry] of this.hostPending) clearTimeout(entry.timer);
     for (const [, entry] of this.bridgePending) clearTimeout(entry.timer);
     this.hostPending.clear();
@@ -480,11 +595,11 @@ class Router {
   }
 }
 
-function isNotification(message) {
+function isNotification(message: JsonRpcMessage): boolean {
   return message.method !== undefined && message.id === undefined;
 }
 
-function isResponse(message) {
+function isResponse(message: JsonRpcMessage): boolean {
   return (
     message.method === undefined &&
     message.id !== undefined &&
@@ -492,8 +607,13 @@ function isResponse(message) {
   );
 }
 
+function toMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
 /** 构造 isError 工具结果（工具层错误按 MCP 约定不用 JSON-RPC error 表达） */
-function toolError(code, message) {
+export function toolError(code: string, message: string): ToolResult {
   return {
     isError: true,
     content: [{ type: 'text', text: `[${code}] ${message}` }],
@@ -502,16 +622,7 @@ function toolError(code, message) {
 }
 
 /** 提取参数 key 名用于审计（值一律不落盘） */
-function safeArgKeys(args) {
+function safeArgKeys(args: unknown): string[] {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return [];
-  return Object.keys(args);
+  return Object.keys(args as Record<string, unknown>);
 }
-
-module.exports = {
-  Router,
-  toolError,
-  LATEST_PROTOCOL_VERSION,
-  SUPPORTED_PROTOCOL_VERSIONS,
-  ERROR_BRIDGE_UNAVAILABLE,
-  INSTRUCTIONS,
-};

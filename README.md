@@ -1,29 +1,50 @@
 # alidocs-web-mcp
 
-把**浏览器里已经打开的那篇钉钉文档**的编辑能力，桥接给任意 MCP host。
+**Let your AI agent read and edit the DingTalk Doc you already have open — in your own browser, under your own login, with every change landing as a suggestion you approve or discard.**
 
-对外是标准 stdio MCP server，对内经 `ws://127.0.0.1` 连接文档页面内的 MCP Server，透传页面提供的文档工具。
+[![npm](https://img.shields.io/npm/v/alidocs-web-mcp.svg)](https://www.npmjs.com/package/alidocs-web-mcp)
+[![CI](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](https://nodejs.org)
 
-```
-任意 MCP host（IDE / 终端 / 桌面 Agent）
-   ↕ stdio（标准 MCP）
-alidocs-web-mcp（本进程：配对 + 哑管道转发）
-   ↕ ws://127.0.0.1:19837（页面主动出站连接）
-文档页面内的 MCP Server → 文档工具 → 建议态修改
-```
+[中文文档](./README.zh-CN.md)
 
-**特点**
+---
 
-- **零运行时依赖**：纯 Node ≥ 18，手写 WS 帧编解码，`npx` 即用
-- **零脚本注入**：不下发任何需要 `eval` 的代码；配对码只是一串数据
-- **桥不理解工具语义**：页面新增工具无需改本进程
-- **写操作走建议态**：修改以可接受/可拒绝的建议呈现，落盘由用户裁决
+## Why this exists
 
-> 前提：文档页面侧需已加载对应的连接器实现（页面自己发现本进程并发起配对）。本进程只是桥，不注入任何东西到页面。
+You are editing a document in your browser. Your AI agent lives somewhere else — an IDE, a terminal, a desktop app. To let the agent help, you normally have two bad options:
 
-## 快速开始
+| Option | Why it falls short |
+| --- | --- |
+| Server-side document API | Cannot express *block-level suggestions* awaiting human review, and needs its own credentials and permission plumbing |
+| Give the agent its own browser | Splits your session in two: the document you are looking at is not the document the agent drives |
 
-### 1. 注册给 MCP host
+The capability you actually want — structured, block-level editing that renders as a **reviewable suggestion** — only exists inside the page runtime. So instead of recreating it elsewhere, this tool connects your agent *to the page you already have open*.
+
+**The direction is inverted on purpose.** The page dials out to a local process; the local process never reaches into your browser. That is what makes it work without debug ports, browser extensions, or any change to your agent's host application.
+
+## What you get
+
+- **Standard MCP over stdio** — works with any MCP host (IDE, terminal, desktop agent). No custom protocol to adopt.
+- **Zero runtime dependencies** — plain Node ≥ 22.12, hand-rolled WebSocket framing. `npx` and go.
+- **Zero code injection** — the pairing credential is *data*, never a script. Nothing is ever `eval`'d.
+- **Read-only by default** — writes require an explicit flag, and land as suggestions rather than saved edits.
+- **Loopback only** — binds `127.0.0.1`, enforces an Origin allowlist, and authenticates with an HMAC challenge-response.
+
+## Requirements
+
+> [!IMPORTANT]
+> This bridge is **half of a pair**. The document page must ship a matching connector that discovers the bridge and initiates pairing. Without it, the bridge starts fine but no document tools will ever appear.
+>
+> As of now that connector is not yet generally available in production DingTalk Docs. If `get_bridge_status` keeps reporting `connected: false` while the bridge is clearly running, this is almost certainly why — not a misconfiguration on your side.
+
+- Node.js ≥ 22.12 (ESM-only package; `require()` from CommonJS works on 22.12+)
+- A DingTalk Doc page open in a browser, with the page-side connector present
+
+## Install & run
+
+Register it with your MCP host — no global install needed:
 
 ```json
 {
@@ -36,106 +57,186 @@ alidocs-web-mcp（本进程：配对 + 哑管道转发）
 }
 ```
 
-或从源码运行：
+Or run it directly:
 
 ```bash
-node bin/alidocs-web-mcp.js --allow-write
+npx -y alidocs-web-mcp              # read-only
+npx -y alidocs-web-mcp --allow-write # allow the page to register write tools
 ```
 
-默认依次尝试端口 **19837 / 19838 / 19839**，用第一个空闲端口（页面据此发现本进程）。
+The bridge tries ports **19837 → 19838 → 19839** and takes the first free one. The page discovers it by probing those same ports, which is why they are fixed rather than random.
 
-### 2. 配对（三步）
+## How pairing works
 
-1. Agent 调 `get_pairing_code` → 得到**配对码字符串**与端口
-2. 在已打开的文档页面「本地 Agent」面板里填入配对码并确认（Agent 可用 UI 自动化填写，用户也可从终端复制粘贴）
-3. 之后 `tools/list` 会出现文档工具，按标准 MCP 调用
+Three steps, and the agent can drive all of them:
 
-页面刷新 / 同标签同源跳转后会用 `sessionStorage` 里的配对码**自动重连**，无需再次配对。
+1. Call `get_pairing_code` → you get a **pairing code (a string of data)** and the port.
+2. Put that code into the page's "local agent" pairing field — the agent can type and click it, or you can paste it yourself.
+3. The page completes an HMAC handshake. From then on `tools/list` includes the document tools.
 
-## 桥自有工具
+After a refresh or same-tab navigation, the page reconnects automatically using the code it kept in `sessionStorage`. No re-pairing.
 
-| 工具 | 作用 |
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph outside["Outside the browser"]
+        host["MCP host<br/>(IDE / terminal / desktop agent)"]
+        bridge["alidocs-web-mcp<br/>pairing + dumb pipe"]
+    end
+    subgraph browser["Your browser, your login"]
+        page["Document page<br/>MCP server + tools"]
+        doc["Document<br/>suggestion state"]
+    end
+
+    host <-->|"stdio · standard MCP"| bridge
+    page -->|"1 · discover: GET /health"| bridge
+    page <-->|"2 · ws://127.0.0.1 · HMAC handshake<br/>3 · JSON-RPC passthrough"| bridge
+    page --> doc
+
+    classDef trust fill:#eef7ff,stroke:#4b86c9
+    classDef local fill:#f6f6f6,stroke:#999
+    class browser trust
+    class outside local
+```
+
+Two properties worth noting:
+
+- **The page always initiates.** The bridge only listens on loopback; it never dials into the browser.
+- **The bridge is a dumb pipe.** Beyond its own three tools, it merges `tools/list` and forwards `tools/call` verbatim. It does not understand document semantics — so the page can add tools without changing the bridge.
+
+## Data flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as MCP host
+    participant B as alidocs-web-mcp
+    participant P as Document page
+    participant D as Document
+
+    Note over B: bind 127.0.0.1, generate a per-session pairing code (CSPRNG)
+
+    H->>B: tools/call get_pairing_code
+    B-->>H: pairingCode + port (data, never a script)
+
+    P->>B: GET /health on 19837/38/39
+    B-->>P: { service, originAllowed, ... }
+
+    Note over H,P: the code reaches the page via UI (typed or pasted)
+
+    P->>B: WS upgrade (Origin checked here → 403 if not allowed)
+    B-->>P: challenge { nonce }
+    P->>B: auth { mac = HMAC-SHA256(pairingCode, nonce) }
+    B-->>P: ready { sessionId }
+    B->>H: notifications/tools/list_changed
+
+    H->>B: tools/call read_document
+    B->>P: forwarded verbatim (id remapped)
+    P->>D: read
+    D-->>P: content
+    P-->>B: result
+    B-->>H: result
+
+    H->>B: tools/call update_block
+    B->>P: forwarded verbatim
+    P->>D: write as a suggestion (not saved)
+    Note over D: you approve or discard it
+```
+
+The pairing code itself is never transmitted — only `HMAC(code, nonce)` is. Someone who squats the port and captures the mac still cannot recover the code.
+
+## Bridge tools
+
+Everything else you see in `tools/list` comes from the page; the bridge only forwards it.
+
+| Tool | What it does |
 | --- | --- |
-| `get_pairing_code` | 返回配对码（数据）+ 端口 + 写权限状态。**不返回脚本** |
-| `get_bridge_status` | 端口、是否已建桥、页面是否就绪、在途请求、Origin 白名单、审计日志路径 |
-| `revoke_session` | 轮换配对码并断开当前会话；页面侧存储的旧码立即失效 |
+| `get_pairing_code` | Returns the pairing code (data) plus the port and write-permission state. **Never returns a script.** |
+| `get_bridge_status` | Port, whether a page is paired, whether its MCP session is ready, in-flight requests, Origin allowlist, audit log path. Start here when a call fails. |
+| `revoke_session` | Rotates the pairing code and drops the session. Anything the page stored becomes invalid immediately. |
 
-其余工具全部来自页面，本进程只透传。
+## CLI options
 
-## CLI 参数
-
-| 参数 | 说明 |
+| Flag | Meaning |
 | --- | --- |
-| `--port <n>` | 只用该端口（默认走候选集 19837/19838/19839） |
-| `--allow-origin <pattern>` | 追加 Origin 白名单（可重复），`*` 只匹配单个 label/端口 |
-| `--only-origin <pattern>` | 用给定条目**完全替换**默认白名单 |
-| `--allow-write` | 允许页面注册写工具（默认只读） |
-| `--audit-log <path>` / `--no-audit` | 审计日志路径 / 关闭（默认 `~/.alidocs-web-mcp/audit.log`） |
-| `--handshake-timeout-ms <n>` | WS 握手等待时限（默认 10000） |
-| `--request-timeout-ms <n>` | 转发给页面的请求超时（默认 60000） |
+| `--port <n>` | Use only this port instead of the candidate set |
+| `--allow-origin <pattern>` | Append an allowlist entry (repeatable); `*` matches a single label or port, never across `.` `:` `/` |
+| `--only-origin <pattern>` | Replace the default allowlist entirely |
+| `--allow-write` | Allow the page to register write tools (read-only otherwise) |
+| `--audit-log <path>` / `--no-audit` | Audit log location, default `~/.alidocs-web-mcp/audit.log` |
+| `--handshake-timeout-ms <n>` | Handshake deadline, default 10000 |
+| `--request-timeout-ms <n>` | Timeout for requests forwarded to the page, default 60000 |
 
-默认 Origin 白名单含**官方文档环境（生产 + 预发）与本地开发域**，逐条枚举；**不做 `*.dingtalk.com` 之类宽泛通配**，以免任意子域页面都能连本地桥。自建域显式追加：
+The default allowlist contains only the official document origins plus local dev hosts, enumerated one by one. There is deliberately **no** wildcard like `https://*.dingtalk.com` — that would let any subdomain reach your local bridge.
+
+## Security posture
+
+This tool opens a listening port on your machine, so it is worth being explicit. Four attack directions, each with its own defence:
+
+| Direction | Defence |
+| --- | --- |
+| A malicious web page → your local bridge | Loopback-only bind **plus** an Origin allowlist enforced during the WS upgrade (403 before any state changes) |
+| A malicious local process → the bridge | A per-session CSPRNG pairing code. Origin headers can be forged by non-browser clients; the code cannot be guessed |
+| A local impostor squatting the port → your page | HMAC challenge-response, so the code never goes over the wire; plus port-contention detection |
+| A poisoned distribution or prompt injection → your page | Credentials travel as data, never as code; read-only by default; writes only ever become suggestions |
+
+Also: `/health` responses are tiered by Origin (outsiders cannot read `connected` or `allowWrite`), one session at a time, and the audit log records tool names and argument *keys* — never argument values or the pairing code.
+
+Full threat model and the S1–S13 control list: **[docs/security.md](./docs/security.md)**. Reporting a vulnerability: **[SECURITY.md](./SECURITY.md)**.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+| --- | --- |
+| `tools/list` only shows the three bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. |
+| `get_bridge_status` shows `connected: false` forever | The page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
+| `ORIGIN_REJECTED` | Your document origin is not allowlisted. Add it with `--allow-origin`. |
+| `PORT_CONTENDED` | All three candidate ports are taken. Free one, or pass `--port`. |
+| `AUTH_FAILED` right after a bridge restart | Expected: restarting rotates the code. Pair again with the fresh one. |
+| `PAGE_DISCONNECTED` mid-call | The page navigated or refreshed. It reconnects on its own; retry the call. |
+| `PAGE_TIMEOUT` | The page did not answer within `--request-timeout-ms`. |
+
+## Development
 
 ```bash
-npx -y alidocs-web-mcp --allow-origin 'https://your-env.example.com'
+npm install       # dev deps only (TypeScript, Vitest, Biome, publint, attw)
+npm run build     # tsc -p tsconfig.build.json → dist/ (ESM + .d.ts)
+npm test          # Vitest: unit + e2e against src/, plus an artifact smoke on dist/
+npm run typecheck # tsc --noEmit over src/ and test/
+npm run lint      # Biome (lint + format check); `npm run lint:fix` to apply
+npm run verify    # lint → typecheck → build → test → package checks (run before a PR)
 ```
 
-## 安全模型（摘要）
+**Stack:** TypeScript 7 · Vitest 4 · Biome 2 · publint + [`attw`](https://github.com/arethetypeswrong/arethetypeswrong.github.io) — all dev-time only; the shipped artifact still has **zero** runtime dependencies.
 
-四个攻击方向各有正交防御，缺一不可：
+Source is TypeScript under `src/`, published as **ESM-only** in a flat `dist/`. Tests are TypeScript too: unit and e2e suites import `src/` directly, so a broken contract fails at typecheck instead of surfacing as an `undefined` assertion. What compilation itself can break — missing shebang, `exports` pointing at files that do not exist, `vectors.json` not copied, ESM-hostile code such as `__dirname` — is covered separately by [`test/artifact.test.ts`](./test/artifact.test.ts), which rebuilds a stale `dist/` on demand and drives the real CLI process over stdio. Because the bridge uses a fixed port set, tests run serially.
 
-| 方向 | 防御 |
-| --- | --- |
-| ① 恶意网页 → 本地 | 只 bind `127.0.0.1` + **Origin 白名单**（upgrade 阶段 403） |
-| ② 本地恶意进程 → 桥 | **运行时 CSPRNG 配对码**（Origin 可伪造，凭证不可猜） |
-| ③ 本地冒充者抢端口 | **HMAC 挑战-响应**（配对码明文永不上线）+ 端口占用检测 |
-| ④ 分发/提示投毒 | **凭证以数据传递**，绝不返回可执行脚本；默认只读；写操作只产生建议 |
+Downstream projects can build contract tests against a real bridge process:
 
-另有：`/health` 按 Origin 分级（白名单外拿不到 `connected`/`allowWrite` 等指纹）、单连接会话制、审计日志不记录配对码与参数值。
-
-**完整威胁模型与措施清单见 [docs/security.md](./docs/security.md)。**
-
-## 线协议
-
-`src/protocol/` 是协议单一真源（零依赖）：
-
-```
-page → bridge:  OPEN(ws://127.0.0.1:<port>)      # 桥校验 Origin
-bridge → page:  { docmcp:2, type:'challenge', nonce }
-page → bridge:  { docmcp:2, type:'auth', mac }   # mac = HMAC-SHA256(pairingCode, nonce)
-bridge → page:  { docmcp:2, type:'ready', sessionId, allowWrite, version }
-                { docmcp:2, type:'error', code, message } + close 4003（失败）
-page → bridge:  { docmcp:2, type:'bye' }
+```ts
+import { startTestBridge, connectFakePage, readyOf } from 'alidocs-web-mcp/testing';
 ```
 
-握手完成后双向原样透传 JSON-RPC。`src/protocol/vectors.json` 是跨实现一致性向量：页面侧（Web Crypto）与本仓（node crypto）必须算出同一个 mac，两侧测试各自断言，防止协议漂移。
+See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENT.md](./AGENT.md) (the latter lists constraints that must not be violated, e.g. "never return executable code").
 
-设计取舍与三个不可拆分的耦合见 [docs/design.md](./docs/design.md)。
+## Project status
 
-## 开发
+Early (0.x). Verified today:
 
-```bash
-npm test          # 49 用例（node --test，串行，因用固定端口）
-npm run test:unit # 仅单元
-npm run test:e2e  # 仅端到端
-npm run lint      # 语法检查
-npm run verify    # lint + test
-```
+- 56 automated tests: unit + end-to-end against the sources, plus an artifact smoke that runs the built CLI as a real process
+- 12 Origin bypass attempts (subdomain suffixing, full-URL-in-Origin, trailing dot, case variants, scheme downgrade, `null`, missing, port injection, backslash confusion) all rejected at the real upgrade path
+- Business messages sent before the handshake are rejected and the socket closed
+- Cross-implementation HMAC agreement with the page side, pinned by shared test vectors
 
-无需 `npm install`——本项目零依赖（含开发期）。
+**Not yet verified:** a real MCP host consuming this server end to end. Development so far used a purpose-built minimal MCP client, which also means the `notifications/tools/list_changed` path — how a host learns that document tools appeared after pairing — has only been covered by automated tests with a fake host, not observed against a real one.
 
-下游做契约测试可用真实桥进程：
+## Documentation
 
-```js
-const { startTestBridge, connectFakePage } = require('alidocs-web-mcp/test-helpers');
-```
-
-## 文档
-
-- [docs/design.md](./docs/design.md) — 设计说明与取舍
-- [docs/security.md](./docs/security.md) — 安全设计单一真源
-- [AGENT.md](./AGENT.md) — AI Agent 协作约定（改动本仓前必读）
-- [CONTRIBUTING.md](./CONTRIBUTING.md) · [SECURITY.md](./SECURITY.md) · [CHANGELOG.md](./CHANGELOG.md)
+- [docs/design.md](./docs/design.md) — design, trade-offs, and the three couplings you cannot separate
+- [docs/security.md](./docs/security.md) — threat model and control list
+- [AGENT.md](./AGENT.md) — conventions for AI agents working on this repo
+- [CHANGELOG.md](./CHANGELOG.md)
 
 ## License
 

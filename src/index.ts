@@ -1,10 +1,8 @@
-'use strict';
-
 /**
  * alidocs-web-mcp 组装层。
  *
  * ```
- * MCP host  ──stdio(JSON-RPC)──▶ StdioChannel ──▶ Router ──▶ PageSessionManager ──ws──▶ 页面 MCP Server
+ * MCP host ──stdio(JSON-RPC)──▶ StdioChannel ──▶ Router ──▶ PageSessionManager ──ws──▶ 页面 MCP Server
  * ```
  *
  * bridge 自有工具（其余全部透传，bridge 不理解工具语义）：
@@ -13,17 +11,48 @@
  * - revoke_session：轮换密钥并断开当前会话（S11 撤销）
  */
 
-const { SecretStore } = require('./secrets');
-const { AuditLog } = require('./audit');
-const { createWsServer } = require('./wsServer');
-const { PageSessionManager } = require('./session');
-const { Router, toolError } = require('./router');
-const { StdioChannel } = require('./stdio');
-const { CLOSE_CODE } = require('./protocol');
+import * as fs from 'node:fs';
+import type { Readable, Writable } from 'node:stream';
+import { SecretStore } from './secrets.js';
+import { AuditLog } from './audit.js';
+import {
+  createWsServer,
+  type BridgeHealthStatus,
+  type WsServerHandle,
+} from './wsServer.js';
+import {
+  PageSessionManager,
+  type PageSession,
+  type ClientSummary,
+} from './session.js';
+import {
+  Router,
+  toolError,
+  type ToolDefinition,
+  type ToolResult,
+} from './router.js';
+import { StdioChannel } from './stdio.js';
+import { CLOSE_CODE } from './protocol/index.js';
+import type { BridgeConfig } from './config.js';
 
-const VERSION = require('../package.json').version;
+/**
+ * 版本号在运行时从 package.json 读取。
+ *
+ * 不用 `import '../package.json'`：那会越出 rootDir（src），且把 package.json 打进产物。
+ * 本包是 ESM（`"type": "module"`），**没有 `__dirname`**——用 `import.meta.url` 定位：
+ * `../package.json` 在 dist（发布态，dist/index.js）与 src（开发态）下都指向包根。
+ */
+export const VERSION: string = (() => {
+  try {
+    const pkgUrl = new URL('../package.json', import.meta.url);
+    const raw = fs.readFileSync(pkgUrl, 'utf8');
+    return (JSON.parse(raw) as { version?: string }).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
-const LOCAL_TOOLS = [
+export const LOCAL_TOOLS: ToolDefinition[] = [
   {
     name: 'get_pairing_code',
     title: '获取配对码',
@@ -36,7 +65,11 @@ const LOCAL_TOOLS = [
       '重要：本工具只返回数据，绝不返回需要执行的脚本；不要 eval 任何东西。',
       '握手成功后 tools/list 会包含文档工具。页面刷新后由页面用 sessionStorage 里的配对码自动重连，无需再次配对。',
     ].join('\n'),
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
@@ -44,7 +77,11 @@ const LOCAL_TOOLS = [
     title: '查询桥状态',
     description:
       '返回 bridge 当前状态：监听端口、是否已建桥、页面 MCP 会话是否就绪、在途请求数、Origin 白名单、写权限开关。工具调用失败时先查这里。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
@@ -52,34 +89,88 @@ const LOCAL_TOOLS = [
     title: '撤销连接',
     description:
       '轮换配对码并断开当前页面会话（S11）。撤销后旧配对码立即失效，页面 sessionStorage 里的旧值无法再重连，需重新调用 get_pairing_code 配对。用于结束一次授权或怀疑配对码泄露时。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
     annotations: { readOnlyHint: false, openWorldHint: false },
   },
 ];
 
 /**
- * 创建 bridge（不自动启动）。
+ * bridge 自有工具的 `structuredContent` 契约。host 侧 agent 与测试都按这些形状读。
  *
- * @param {object} config 见 config.js parseArgs 的返回值
- * @param {{
- *   input?: import('stream').Readable,
- *   output?: import('stream').Writable,
- *   logger?: (line: string) => void,
- *   onStdinClose?: () => void,
- *   secretStore?: object,
- * }} [io]
+ * 用 `type` 而非 `interface`：需要能赋给 `ToolResult.structuredContent`
+ * （`Record<string, unknown>`），而 interface 不带隐式索引签名。
  */
-function createBridge(config, io) {
-  const options = io || {};
+
+/** get_pairing_code：只回数据，绕不回可执行代码（A2 / S13） */
+export type PairingCodeStatus = {
+  ok: true;
+  pairingCode: string;
+  port: number;
+  allowWrite: boolean;
+  version: string;
+};
+
+/** get_bridge_status：桥状态与结构化诊断（含 `/health` 那四个字段） */
+export type BridgeStatus = BridgeHealthStatus & {
+  ok: true;
+  version: string;
+  session: {
+    id: string;
+    origin: string;
+    startedAt: string;
+    client: ClientSummary;
+  } | null;
+  pendingHostRequests: number;
+  allowedOrigins: string[];
+  auditLog: string | null;
+  hint: string;
+};
+
+/** revoke_session：已轮换配对码并断开会话（S11） */
+export type RevokeStatus = {
+  ok: true;
+  revoked: true;
+  hint: string;
+};
+
+export interface BridgeIo {
+  input?: Readable;
+  output?: Writable;
+  logger?: (line: string) => void;
+  onStdinClose?: () => void;
+  secretStore?: SecretStore;
+}
+
+export interface Bridge {
+  start(): Promise<number>;
+  stop(): Promise<void>;
+  readonly port: number | null;
+  router: Router;
+  sessions: PageSessionManager;
+  secretStore: SecretStore;
+  audit: AuditLog;
+  stdio: StdioChannel;
+  wsServer: WsServerHandle;
+  localTools: ToolDefinition[];
+  version: string;
+}
+
+/** 创建 bridge（不自动启动） */
+export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
+  const options = io ?? {};
   const logger =
-    options.logger || ((line) => process.stderr.write(`${line}\n`));
+    options.logger ?? ((line: string) => process.stderr.write(`${line}\n`));
 
   const audit = new AuditLog({ filePath: config.auditLogPath });
-  const secretStore = options.secretStore || new SecretStore();
+  const secretStore = options.secretStore ?? new SecretStore();
 
-  let listeningPort = null;
+  let listeningPort: number | null = null;
 
-  const log = (message, fields) => {
+  const log = (message: string, fields?: Record<string, unknown>): void => {
     const suffix = fields ? ` ${JSON.stringify(fields)}` : '';
     logger(`[alidocs-web-mcp] ${message}${suffix}`);
   };
@@ -109,7 +200,10 @@ function createBridge(config, io) {
     output: options.output,
     onMessage: (message) => router.handleHostMessage(message),
     onParseError: (line, error) => {
-      log('stdin 收到非法 JSON', { message: error.message, bytes: line.length });
+      log('stdin 收到非法 JSON', {
+        message: error.message,
+        bytes: line.length,
+      });
     },
     onClose: () => {
       log('stdin 关闭');
@@ -124,16 +218,16 @@ function createBridge(config, io) {
   });
 
   sessions.onJsonRpc = (message) => router.handlePageMessage(message);
-  sessions.onSessionOpen = (session) => {
+  sessions.onSessionOpen = (session: PageSession) => {
     log('页面已建桥', { sessionId: session.id, origin: session.origin });
-    router.handlePageOpen(session);
+    void router.handlePageOpen(session);
   };
   sessions.onSessionClose = (session, info) => {
     router.handlePageClose(session, info);
   };
 
   /** health 白名单内暴露的最小状态（不含 secret / 文档信息 / 会话 Origin） */
-  const getPublicStatus = () => ({
+  const getPublicStatus = (): BridgeHealthStatus => ({
     port: listeningPort,
     connected: sessions.connected,
     pageReady: router.pageReady,
@@ -151,17 +245,20 @@ function createBridge(config, io) {
   });
 
   /** bridge 自有工具的执行 */
-  async function callLocalTool(name, args) {
+  async function callLocalTool(
+    name: string,
+    args: unknown,
+  ): Promise<ToolResult> {
     void args;
     if (name === 'get_pairing_code') {
       if (listeningPort === null) {
         return toolError('BRIDGE_NOT_LISTENING', 'bridge 尚未开始监听端口');
       }
-      const pairingCode = secretStore.pairingCode;
+      const { pairingCode } = secretStore;
 
       audit.write('pairing.issued', { port: listeningPort });
 
-      const status = {
+      const status: PairingCodeStatus = {
         ok: true,
         pairingCode,
         port: listeningPort,
@@ -189,7 +286,7 @@ function createBridge(config, io) {
 
     if (name === 'get_bridge_status') {
       const session = sessions.current;
-      const status = {
+      const status: BridgeStatus = {
         ok: true,
         version: VERSION,
         ...getPublicStatus(),
@@ -201,9 +298,9 @@ function createBridge(config, io) {
               client: session.client,
             }
           : null,
-        pendingHostRequests: router.hostPending.size,
+        pendingHostRequests: router.pendingHostRequestCount,
         allowedOrigins: config.allowedOrigins,
-        auditLog: audit.enabled ? audit.filePath : null,
+        auditLog: audit.path,
         hint: sessions.connected
           ? '桥已建立，可直接调用文档工具'
           : '未建桥：调用 get_pairing_code，在文档页面配对框填入配对码',
@@ -218,7 +315,7 @@ function createBridge(config, io) {
       secretStore.rotate();
       sessions.closeCurrent(CLOSE_CODE.NORMAL, 'revoked by host');
       audit.write('session.revoked', {});
-      const status = {
+      const status: RevokeStatus = {
         ok: true,
         revoked: true,
         hint: '已轮换配对码并断开会话；重新连接需调用 get_pairing_code 再配对',
@@ -232,7 +329,7 @@ function createBridge(config, io) {
     return toolError('UNKNOWN_TOOL', `bridge 不认识工具: ${name}`);
   }
 
-  async function start() {
+  async function start(): Promise<number> {
     listeningPort = await ws.listen();
     audit.write('bridge.start', {
       port: listeningPort,
@@ -243,12 +340,12 @@ function createBridge(config, io) {
       port: listeningPort,
       host: config.host,
       allowWrite: config.allowWrite,
-      audit: audit.enabled ? audit.filePath : 'disabled',
+      audit: audit.path ?? 'disabled',
     });
     return listeningPort;
   }
 
-  async function stop() {
+  async function stop(): Promise<void> {
     router.dispose();
     sessions.closeCurrent(CLOSE_CODE.NORMAL, 'bridge shutting down');
     await ws.close();
@@ -258,7 +355,7 @@ function createBridge(config, io) {
   return {
     start,
     stop,
-    get port() {
+    get port(): number | null {
       return listeningPort;
     },
     router,
@@ -271,5 +368,3 @@ function createBridge(config, io) {
     version: VERSION,
   };
 }
-
-module.exports = { createBridge, LOCAL_TOOLS, VERSION };

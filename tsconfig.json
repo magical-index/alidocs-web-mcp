@@ -1,0 +1,27 @@
+{
+  // 编辑器与 `npm run typecheck` 用这份：覆盖 src + test，只检查不产出。
+  // 发布产物由 tsconfig.build.json 产出（它只收 src/，且关掉 .ts 后缀导入）。
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+
+    "noEmit": true,
+    // 测试直接 import `../src/x.ts`（vitest 自己转译），故只在检查期允许
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

@@ -1,24 +1,23 @@
-'use strict';
-
 /**
  * 挑战-响应的 HMAC 计算（S10）· bridge 侧。
  *
  * mac = HMAC-SHA256(secret, nonce) 的 hex 编码。
- * 页面侧用 Web Crypto 实现同一算法，protocolConformance 测试用固定向量校验两侧一致。
+ * 页面侧用 Web Crypto 实现同一算法，两侧各自用 `vectors.json` 的固定向量校验一致性。
  *
  * secret 与 nonce 均以 UTF-8 编码进 HMAC。
  */
 
-const crypto = require('crypto');
-const { MAC_ALGORITHM } = require('./index');
+import * as crypto from 'node:crypto';
+import { MAC_ALGORITHM } from './index.js';
 
 /**
  * 计算 mac。
- * @param {string} secret 高熵配对码/会话密钥
- * @param {string} nonce  bridge 下发的一次性随机数
- * @returns {string} hex 编码的 HMAC
+ *
+ * @param secret 高熵配对码/会话密钥
+ * @param nonce bridge 下发的一次性随机数
+ * @returns hex 编码的 HMAC
  */
-function computeMac(secret, nonce) {
+export function computeMac(secret: string, nonce: string): string {
   return crypto
     .createHmac(MAC_ALGORITHM, Buffer.from(String(secret), 'utf8'))
     .update(Buffer.from(String(nonce), 'utf8'))
@@ -27,9 +26,15 @@ function computeMac(secret, nonce) {
 
 /**
  * 常量时间比较候选 mac 与期望 mac，避免时序侧信道。
- * @returns {boolean}
+ *
+ * 长度不等时提前返回：mac 长度固定（64 hex 字符）且不是秘密，
+ * 因此这里的提前返回不泄露额外信息，而 `timingSafeEqual` 要求等长入参。
  */
-function verifyMac(secret, nonce, candidateMac) {
+export function verifyMac(
+  secret: string,
+  nonce: string,
+  candidateMac: unknown,
+): boolean {
   if (typeof candidateMac !== 'string' || candidateMac.length === 0) {
     return false;
   }
@@ -41,13 +46,11 @@ function verifyMac(secret, nonce, candidateMac) {
 }
 
 /** 生成一次性 challenge nonce（128-bit hex） */
-function generateNonce() {
+export function generateNonce(): string {
   return crypto.randomBytes(16).toString('hex');
 }
 
 /** 生成高熵会话密钥（配对码，256-bit hex） */
-function generateSecret() {
+export function generateSecret(): string {
   return crypto.randomBytes(32).toString('hex');
 }
-
-module.exports = { computeMac, verifyMac, generateNonce, generateSecret };

@@ -1,17 +1,16 @@
-'use strict';
-
 /**
  * 页面会话管理：挑战-响应握手（S10）+ 单连接会话制（S8）。
  *
- * 握手时序（详见 protocol.js）：
+ * 握手时序（详见 protocol/index.ts）：
  *   accept(conn) → bridge 发 challenge{nonce} → 页面回 auth{mac} →
- *   校验 HMAC(secret, nonce) → ready{sessionId} 或 error+close(4003)
+ *   校验 HMAC(secret, nonce) → ready{sessionId} 或 error + close(4003)
  *
+ * 握手完成前**不接受任何业务消息**：首帧必须是 auth，否则直接关闭。
  * 握手完成后 JSON-RPC 原样透传，bridge 不理解工具语义。
- * secret 永不上线，只校验页面回传的 mac；旧密钥（rotate 后）自然失效。
+ * secret 永不上线，只校验页面回传的 mac；rotate 后旧密钥自然失效。
  */
 
-const {
+import {
   PROTOCOL_VERSION,
   CLOSE_CODE,
   CONTROL_TYPE,
@@ -20,45 +19,91 @@ const {
   makeChallenge,
   makeReady,
   makeError,
-} = require('./protocol');
-const { generateNonce } = require('./protocol/crypto');
+} from './protocol/index.js';
+import { generateNonce } from './protocol/crypto.js';
 
-class PageSessionManager {
-  /**
-   * @param {{
-   *   secretStore: { verify: (nonce: string, mac: unknown) => boolean },
-   *   handshakeTimeoutMs: number,
-   *   version: string,
-   *   allowWrite: boolean,
-   *   audit?: { write: (event: string, fields?: object) => void },
-   *   makeNonce?: () => string,
-   * }} options
-   */
-  constructor(options) {
+/** WS 连接抽象：由 wsServer 提供，便于测试替换 */
+export interface SessionConnection {
+  origin: string;
+  send(text: string): void;
+  close(code?: number, reason?: string): void;
+  onmessage: ((text: string) => void) | null;
+  onclose: ((info: { code?: number; reason?: string }) => void) | null;
+  onerror: ((error: Error) => void) | null;
+}
+
+export interface ClientSummary {
+  [key: string]: string | number | boolean;
+}
+
+export interface PageSession {
+  id: string;
+  origin: string;
+  client: ClientSummary;
+  startedAt: number;
+  connection: SessionConnection;
+}
+
+interface PendingHandshake {
+  connection: SessionConnection;
+  nonce: string;
+  handshaken: boolean;
+  session: PageSession | null;
+}
+
+export interface PageSessionManagerOptions {
+  secretStore: { verify: (nonce: string, mac: unknown) => boolean };
+  handshakeTimeoutMs: number;
+  version: string;
+  allowWrite: boolean;
+  audit?: {
+    write: (event: string, fields?: Record<string, unknown>) => void;
+  } | null;
+  makeNonce?: () => string;
+}
+
+export class PageSessionManager {
+  private readonly secretStore: PageSessionManagerOptions['secretStore'];
+
+  private readonly handshakeTimeoutMs: number;
+
+  private readonly version: string;
+
+  private readonly allowWrite: boolean;
+
+  private readonly audit: PageSessionManagerOptions['audit'];
+
+  private readonly makeNonce: () => string;
+
+  private sessionCounter = 0;
+
+  current: PageSession | null = null;
+
+  onSessionOpen: ((session: PageSession) => void) | null = null;
+
+  onSessionClose:
+    | ((session: PageSession, info: { code?: number; reason?: string }) => void)
+    | null = null;
+
+  onJsonRpc: ((message: unknown, session: PageSession) => void) | null = null;
+
+  constructor(options: PageSessionManagerOptions) {
     this.secretStore = options.secretStore;
     this.handshakeTimeoutMs = options.handshakeTimeoutMs;
     this.version = options.version;
     this.allowWrite = options.allowWrite;
-    this.audit = options.audit || null;
-    this.makeNonce = options.makeNonce || generateNonce;
-
-    this.sessionCounter = 0;
-    /** @type {null | { id: string, origin: string, client: object, startedAt: number, connection: object }} */
-    this.current = null;
-
-    this.onSessionOpen = null;
-    this.onSessionClose = null;
-    this.onJsonRpc = null;
+    this.audit = options.audit ?? null;
+    this.makeNonce = options.makeNonce ?? generateNonce;
   }
 
-  get connected() {
+  get connected(): boolean {
     return !!this.current;
   }
 
   /** 接管一条已完成 WS upgrade 的连接：立即下发 challenge，进入握手等待态 */
-  accept(connection) {
+  accept(connection: SessionConnection): void {
     const nonce = this.makeNonce();
-    const pending = {
+    const pending: PendingHandshake = {
       connection,
       nonce,
       handshaken: false,
@@ -67,13 +112,15 @@ class PageSessionManager {
 
     const timer = setTimeout(() => {
       if (pending.handshaken) return;
-      this.auditWrite('session.handshake.timeout', { origin: connection.origin });
+      this.auditWrite('session.handshake.timeout', {
+        origin: connection.origin,
+      });
       connection.close(CLOSE_CODE.HANDSHAKE_TIMEOUT, 'handshake timeout');
     }, this.handshakeTimeoutMs);
     if (timer.unref) timer.unref();
 
-    connection.onmessage = (text) => {
-      let message;
+    connection.onmessage = (text: string) => {
+      let message: unknown;
       try {
         message = JSON.parse(text);
       } catch {
@@ -81,7 +128,7 @@ class PageSessionManager {
           connection.close(CLOSE_CODE.MALFORMED, 'invalid json');
         } else {
           this.auditWrite('session.message.malformed', {
-            sessionId: pending.session && pending.session.id,
+            sessionId: pending.session?.id,
           });
         }
         return;
@@ -98,29 +145,33 @@ class PageSessionManager {
         return;
       }
 
-      if (this.onJsonRpc && this.current === pending.session) {
+      if (
+        this.onJsonRpc &&
+        pending.session &&
+        this.current === pending.session
+      ) {
         this.onJsonRpc(message, pending.session);
       }
     };
 
     connection.onclose = (info) => {
       clearTimeout(timer);
-      const session = pending.session;
+      const { session } = pending;
       if (!session) return;
       if (this.current !== session) return; // 已被顶掉的旧连接不再冒泡
       this.current = null;
       this.auditWrite('session.close', {
         sessionId: session.id,
         origin: session.origin,
-        code: info && info.code,
+        code: info?.code,
       });
       if (this.onSessionClose) this.onSessionClose(session, info || {});
     };
 
-    connection.onerror = (error) => {
+    connection.onerror = (error: Error) => {
       this.auditWrite('session.error', {
-        sessionId: pending.session && pending.session.id,
-        message: error && error.message,
+        sessionId: pending.session?.id,
+        message: error?.message,
       });
     };
 
@@ -129,7 +180,7 @@ class PageSessionManager {
   }
 
   /** 校验 auth{mac}：HMAC(secret, nonce) 通过则建会话 */
-  handleAuth(pending, message) {
+  private handleAuth(pending: PendingHandshake, message: unknown): void {
     const { connection, nonce } = pending;
     if (
       !isControlMessage(message) ||
@@ -162,7 +213,10 @@ class PageSessionManager {
       const previous = this.current;
       this.current = null;
       this.auditWrite('session.superseded', { sessionId: previous.id });
-      previous.connection.close(CLOSE_CODE.SUPERSEDED, 'superseded by new session');
+      previous.connection.close(
+        CLOSE_CODE.SUPERSEDED,
+        'superseded by new session',
+      );
       if (this.onSessionClose) {
         this.onSessionClose(previous, {
           code: CLOSE_CODE.SUPERSEDED,
@@ -171,8 +225,9 @@ class PageSessionManager {
       }
     }
 
-    const session = {
-      id: `s${++this.sessionCounter}`,
+    this.sessionCounter += 1;
+    const session: PageSession = {
+      id: `s${this.sessionCounter}`,
       origin: connection.origin,
       client: sanitizeClientInfo(message.client),
       startedAt: Date.now(),
@@ -201,54 +256,61 @@ class PageSessionManager {
   }
 
   /** 握手后的控制消息 */
-  handleControl(pending, message) {
+  private handleControl(
+    pending: PendingHandshake,
+    message: { type: string },
+  ): void {
     if (message.type === CONTROL_TYPE.BYE) {
       pending.connection.close(CLOSE_CODE.NORMAL, 'bye');
     }
     // 其余控制类型 v1 忽略（向前兼容）
   }
 
-  /**
-   * 向当前会话发送 JSON-RPC。
-   * @returns {boolean} 是否送出
-   */
-  sendJsonRpc(message) {
+  /** 向当前会话发送 JSON-RPC；返回是否送出 */
+  sendJsonRpc(message: unknown): boolean {
     if (!this.current) return false;
     this.current.connection.send(JSON.stringify(message));
     return true;
   }
 
-  sendControl(connection, payload) {
+  sendControl(connection: SessionConnection, payload: unknown): void {
     connection.send(JSON.stringify(payload));
   }
 
   /** 主动关闭当前会话 */
-  closeCurrent(code, reason) {
+  closeCurrent(code?: number, reason?: string): void {
     if (!this.current) return;
     this.current.connection.close(code || CLOSE_CODE.NORMAL, reason || '');
   }
 
-  auditWrite(event, fields) {
+  private auditWrite(event: string, fields?: Record<string, unknown>): void {
     if (this.audit) this.audit.write(event, fields);
   }
 }
 
 /** 只保留客户端自报信息中的白名单字段，避免任意数据进日志 */
-function sanitizeClientInfo(client) {
+export function sanitizeClientInfo(client: unknown): ClientSummary {
   if (!client || typeof client !== 'object') return {};
-  const pick = ['name', 'version', 'href', 'docId', 'readOnly', 'toolCount', 'context'];
-  const result = {};
+  const source = client as Record<string, unknown>;
+  const pick = [
+    'name',
+    'version',
+    'href',
+    'docId',
+    'readOnly',
+    'toolCount',
+    'context',
+  ];
+  const result: ClientSummary = {};
   for (const key of pick) {
-    const value = client[key];
+    const value = source[key];
     if (typeof value === 'string') result[key] = value.slice(0, 200);
-    else if (typeof value === 'number' || typeof value === 'boolean') result[key] = value;
+    else if (typeof value === 'number' || typeof value === 'boolean') {
+      result[key] = value;
+    }
   }
   return result;
 }
 
-module.exports = {
-  PageSessionManager,
-  DOCMCP_PROTOCOL: PROTOCOL_VERSION,
-  CLOSE_CODE,
-  sanitizeClientInfo,
-};
+export { CLOSE_CODE };
+export const DOCMCP_PROTOCOL = PROTOCOL_VERSION;
