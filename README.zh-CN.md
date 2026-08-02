@@ -2,7 +2,7 @@
 
 **让 AI Agent 直接读写你此刻正打开的那份钉钉文档 —— 在你自己的浏览器里、用你自己的登录态，所有修改都以建议形式呈现，由你决定应用还是弃用。**
 
-[![npm](https://img.shields.io/npm/v/alidocs-web-mcp.svg)](https://www.npmjs.com/package/alidocs-web-mcp)
+[![npm](https://img.shields.io/npm/v/@magical-index/alidocs-web-mcp.svg)](https://www.npmjs.com/package/@magical-index/alidocs-web-mcp)
 [![CI](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](https://nodejs.org)
@@ -51,7 +51,7 @@
   "mcpServers": {
     "alidocs-web-mcp": {
       "command": "npx",
-      "args": ["-y", "alidocs-web-mcp", "--allow-write"]
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--allow-write"]
     }
   }
 }
@@ -60,8 +60,8 @@
 也可以直接跑：
 
 ```bash
-npx -y alidocs-web-mcp               # 只读
-npx -y alidocs-web-mcp --allow-write # 允许页面注册写工具
+npx -y @magical-index/alidocs-web-mcp               # 只读
+npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工具
 ```
 
 桥会依次尝试 **19837 → 19838 → 19839**，用第一个空闲端口。页面靠探测这几个固定端口来发现它 —— 这也是端口固定而非随机的原因。
@@ -216,7 +216,7 @@ npm run verify    # lint → typecheck → build → test → 包形状校验（
 下游项目可以基于真实桥进程做契约测试：
 
 ```ts
-import { startTestBridge, connectFakePage, readyOf } from 'alidocs-web-mcp/testing';
+import { startTestBridge, connectFakePage, readyOf } from '@magical-index/alidocs-web-mcp/testing';
 ```
 
 另见 [CONTRIBUTING.md](./CONTRIBUTING.md) 与 [AGENT.md](./AGENT.md)（后者列出了不可违背的约束，例如"绝不返回可执行代码"）。

@@ -4,7 +4,7 @@
  * alidocs-web-mcp CLI 入口。
  *
  * 作为 MCP host 的 stdio server 使用，例如：
- *   { "command": "npx", "args": ["-y", "alidocs-web-mcp", "--allow-write"] }
+ *   { "command": "npx", "args": ["-y", "@magical-index/alidocs-web-mcp", "--allow-write"] }
  *
  * 日志一律走 stderr（stdout 是 JSON-RPC 协议通道）。
  */

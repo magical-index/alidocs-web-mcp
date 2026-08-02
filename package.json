@@ -1,5 +1,5 @@
 {
-  "name": "alidocs-web-mcp",
+  "name": "@magical-index/alidocs-web-mcp",
   "version": "0.1.0",
   "description": "Local MCP bridge that exposes the DingTalk Doc (alidocs) page already open in your browser to any MCP host over stdio.",
   "license": "MIT",

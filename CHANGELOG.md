@@ -28,12 +28,12 @@
 - **单连接会话制**：新会话顶掉旧会话（关闭码 4008）
 - **结构化诊断**：`PAGE_NOT_CONNECTED` / `PAGE_DISCONNECTED` / `PAGE_TIMEOUT` / `AUTH_FAILED` / `ORIGIN_REJECTED` / `PORT_CONTENDED` 等
 - **协议一致性向量**（`src/protocol/vectors.json`）：供页面侧与本仓各自断言，防止跨实现漂移
-- **测试辅助导出**（`alidocs-web-mcp/testing`）：下游可用真实桥进程做契约测试，包含断言辅助（`resultOf` / `errorOf` / `structuredOf` / `readyOf`）
+- **测试辅助导出**（`@magical-index/alidocs-web-mcp/testing`）：下游可用真实桥进程做契约测试，包含断言辅助（`resultOf` / `errorOf` / `structuredOf` / `readyOf`）
 - 56 个用例（Vitest）：单元与端到端测源码，产物 smoke 拉起真实 CLI 进程验证发布形态
 
 ### 说明
 
 - 源码 TypeScript，发布为 **ESM-only** 的扁平 `dist/`（含 `.d.ts`）；需 **Node ≥ 22.12**，CommonJS 调用方靠 `require(esm)` 直接 `require()`
 - 工具链（仅开发期）：TypeScript 7 · Vitest 4 · Biome 2 · publint + attw
-- 运行时零依赖，`npx alidocs-web-mcp` 即可使用
+- 运行时零依赖，`npx @magical-index/alidocs-web-mcp` 即可使用
 - 需要文档页面侧已加载对应连接器实现；本进程不注入任何代码到页面

@@ -29,7 +29,7 @@ src/                   ← bridge 实现层
   audit.ts             审计日志（不记凭证与参数值）
   index.ts             组装层 + 桥自有工具（其 structuredContent 契约以 type 导出）
   cli.ts               启动入口（编译为 dist/cli.js，即 npx 入口）
-  testing/             测试辅助（**公开 API**：`alidocs-web-mcp/testing`）
+  testing/             测试辅助（**公开 API**：`@magical-index/alidocs-web-mcp/testing`）
     wsClient.ts        零依赖 WS 测试客户端
     harness.ts         起真桥 + 假 host/页面 + 断言辅助（resultOf/errorOf/structuredOf/readyOf）
 dist/                  ← tsc 产物（**ESM-only**，扁平结构 + .d.ts），不入版本库
@@ -119,4 +119,4 @@ lsof -ti :19837,:19838,:19839,:19871 | xargs kill -9
 - WS 客户端 + 挑战-响应握手
 - 连接器：探测 `/health` 候选端口发现本进程、配对、`sessionStorage` 重连、撤销
 
-跨实现验证：两侧各自加载 `vectors.json` 断言常量与 HMAC。**不要用"各自 mock"替代**——那会形成契约幻觉；正确做法是页面侧用本仓导出的 `alidocs-web-mcp/testing` 起真实桥做契约测试。
+跨实现验证：两侧各自加载 `vectors.json` 断言常量与 HMAC。**不要用"各自 mock"替代**——那会形成契约幻觉；正确做法是页面侧用本仓导出的 `@magical-index/alidocs-web-mcp/testing` 起真实桥做契约测试。

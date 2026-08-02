@@ -2,7 +2,7 @@
 
 **Let your AI agent read and edit the DingTalk Doc you already have open — in your own browser, under your own login, with every change landing as a suggestion you approve or discard.**
 
-[![npm](https://img.shields.io/npm/v/alidocs-web-mcp.svg)](https://www.npmjs.com/package/alidocs-web-mcp)
+[![npm](https://img.shields.io/npm/v/@magical-index/alidocs-web-mcp.svg)](https://www.npmjs.com/package/@magical-index/alidocs-web-mcp)
 [![CI](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/magical-index/alidocs-web-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen.svg)](https://nodejs.org)
@@ -51,7 +51,7 @@ Register it with your MCP host — no global install needed:
   "mcpServers": {
     "alidocs-web-mcp": {
       "command": "npx",
-      "args": ["-y", "alidocs-web-mcp", "--allow-write"]
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--allow-write"]
     }
   }
 }
@@ -60,8 +60,8 @@ Register it with your MCP host — no global install needed:
 Or run it directly:
 
 ```bash
-npx -y alidocs-web-mcp              # read-only
-npx -y alidocs-web-mcp --allow-write # allow the page to register write tools
+npx -y @magical-index/alidocs-web-mcp              # read-only
+npx -y @magical-index/alidocs-web-mcp --allow-write # allow the page to register write tools
 ```
 
 The bridge tries ports **19837 → 19838 → 19839** and takes the first free one. The page discovers it by probing those same ports, which is why they are fixed rather than random.
@@ -216,7 +216,7 @@ Source is TypeScript under `src/`, published as **ESM-only** in a flat `dist/`. 
 Downstream projects can build contract tests against a real bridge process:
 
 ```ts
-import { startTestBridge, connectFakePage, readyOf } from 'alidocs-web-mcp/testing';
+import { startTestBridge, connectFakePage, readyOf } from '@magical-index/alidocs-web-mcp/testing';
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENT.md](./AGENT.md) (the latter lists constraints that must not be violated, e.g. "never return executable code").
