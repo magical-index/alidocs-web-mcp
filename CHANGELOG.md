@@ -4,13 +4,17 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **建连改为 agent 显式发起**：页面侧连接器不再因「发现桥」自动弹配对面板；agent 在目标页面控制台调 `window.__docMcpWsBridge.pair(配对码)` 建连。避免同一机器上 Chrome / 其它标签页都弹面板、以及多篇文档都配对后桥不知编辑哪篇的问题。本变更在页面侧（we-word），桥侧仅同步文案。
+
 ### 新增
 
 - **静态透传兜底工具 `call_page_tool`**：恒定出现在 `tools/list`，按 `{name, arguments}` 原样转发给页面。用于部分 MCP host 不响应 `notifications/tools/list_changed`、配对后仍看不到文档工具的场景。
 
 ### 文档
 
-- README / 中文 README 增加 `call_page_tool` 说明与「部分 host 不刷新工具清单」的已知限制提示。
+- README / 中文 README / `docs/design.md` / `docs/security.md` / `install.sh` 均将配对指引从「填入页面配对框」改为「agent 控制台调 `pair(code)`」；并新增 `call_page_tool` 说明与「部分 host 不刷新工具清单」的已知限制。
 
 ## [0.1.0] - 2026-08-01
 

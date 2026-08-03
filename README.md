@@ -35,7 +35,7 @@ The capability you actually want — structured, block-level editing that render
 ## Requirements
 
 > [!IMPORTANT]
-> This bridge is **half of a pair**. The document page must ship a matching connector that discovers the bridge and initiates pairing. Without it, the bridge starts fine but no document tools will ever appear.
+> This bridge is **half of a pair**. The document page must ship a matching connector that discovers the bridge and, when the agent tells it to, pairs. The connector does not pop any UI on its own; the agent initiates pairing by calling `window.__docMcpWsBridge.pair(code)` in that page. Without the connector, the bridge starts fine but no document tools will ever appear.
 >
 > As of now that connector is not yet generally available in production DingTalk Docs. If `get_bridge_status` keeps reporting `connected: false` while the bridge is clearly running, this is almost certainly why — not a misconfiguration on your side.
 
@@ -81,7 +81,7 @@ The bridge tries ports **19837 → 19838 → 19839** and takes the first free on
 Three steps, and the agent can drive all of them:
 
 1. Call `get_pairing_code` → you get a **pairing code (a string of data)** and the port.
-2. Put that code into the page's "local agent" pairing field — the agent can type and click it, or you can paste it yourself.
+2. The agent runs one console command **in the target page** (usually the document iframe's `contentWindow`): `await window.__docMcpWsBridge.pair(pairingCode)`. Only the page the agent points at connects — the connector never pops a panel on its own, so other browsers/tabs stay silent.
 3. The page completes an HMAC handshake. From then on `tools/list` includes the document tools.
 
 After a refresh or same-tab navigation, the page reconnects automatically using the code it kept in `sessionStorage`. No re-pairing.
@@ -133,7 +133,7 @@ sequenceDiagram
     P->>B: GET /health on 19837/38/39
     B-->>P: { service, originAllowed, ... }
 
-    Note over H,P: the code reaches the page via UI (typed or pasted)
+    Note over H,P: the agent runs window.__docMcpWsBridge.pair(code) in the target page's console
 
     P->>B: WS upgrade (Origin checked here → 403 if not allowed)
     B-->>P: challenge { nonce }
@@ -201,7 +201,7 @@ Full threat model and the S1–S13 control list: **[docs/security.md](./docs/sec
 | Symptom | Likely cause |
 | --- | --- |
 | `tools/list` only shows the bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. If the page is paired but the host still does not see document tools, the host may not refresh `tools/list`; use `call_page_tool` as a fallback. |
-| `get_bridge_status` shows `connected: false` forever | The page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
+| `get_bridge_status` shows `connected: false` forever | The agent has not run `window.__docMcpWsBridge.pair(code)` in the page yet, or the page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
 | `ORIGIN_REJECTED` | Your document origin is not allowlisted. Add it with `--allow-origin`. |
 | `PORT_CONTENDED` | All three candidate ports are taken. Free one, or pass `--port`. |
 | `AUTH_FAILED` right after a bridge restart | Expected: restarting rotates the code. Pair again with the fresh one. |

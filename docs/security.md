@@ -78,8 +78,8 @@
 
 ```
 1. 用户启动本进程 → CSPRNG 生成 per-session 配对码
-2. 页面探测到 → 浮出输入框
-3. 配对码进入页面（MCP 工具返回的数据经 UI 填入，或用户粘贴）
+2. agent 在目标页面控制台发起建连（连接器不自动弹 UI）
+3. 配对码进入页面（MCP 工具返回的数据，经 `window.__docMcpWsBridge.pair(配对码)` 传入）
 4. WS 握手（配对码不上线）:
      页面 → 本进程: OPEN(ws://127.0.0.1:<port>)      # 校验 Origin 白名单
      本进程 → 页面: { type:'challenge', nonce }

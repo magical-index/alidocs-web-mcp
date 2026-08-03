@@ -136,9 +136,9 @@ EOF
 printf '\n%s\n' "${C_GREEN}${C_BOLD}安装完成${C_RESET}"
 cat <<EOF
 下一步：
-  1. 在浏览器打开钉钉文档（页面侧需已内置配对连接器）。
+  1. 在浏览器打开钉钉文档（页面侧需已内置连接器）。
   2. 让 agent 调 ${C_BOLD}get_pairing_code${C_RESET} 拿到配对码与端口。
-  3. 把配对码填入页面的"本地 agent"配对框，完成 HMAC 握手后 tools/list 才会出现文档工具。
+  3. 让 agent 在目标页面的控制台调 ${C_BOLD}window.__docMcpWsBridge.pair(配对码)${C_RESET} 建连；完成 HMAC 握手后 tools/list 才会出现文档工具。
 
 ${C_DIM}提示：桥默认只读；本次注册$(if [ "$ALLOW_WRITE" -eq 1 ]; then echo "已"; else echo "未"; fi)带 --allow-write。
 若 get_bridge_status 一直 connected:false，多半是页面侧连接器尚未就绪，而非配置问题。${C_RESET}

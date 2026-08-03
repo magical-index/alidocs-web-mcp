@@ -119,4 +119,6 @@ lsof -ti :19837,:19838,:19839,:19871 | xargs kill -9
 - WS 客户端 + 挑战-响应握手
 - 连接器：探测 `/health` 候选端口发现本进程、配对、`sessionStorage` 重连、撤销
 
+**连接器不自动弹任何 UI，也不因「发现桥」而自动建连。** 桥是机器级单例，本地任何浏览器连它都长得一样（同 Origin/`/health`/端口），无法在网络层区分「agent 的内置浏览器」与用户的普通浏览器。因此建连由 agent 显式发起：在**目标页面所在上下文**（通常是文档 iframe 的 contentWindow）经控制台调 `window.__docMcpWsBridge.pair(pairingCode)`——只有 agent 点名的那个页面会连上，其它浏览器/标签页静默（不探测、不弹窗）。页面刷新后由页面用 `sessionStorage` 里的配对码自动重连（per-tab，天然按标签页定界）。
+
 跨实现验证：两侧各自加载 `vectors.json` 断言常量与 HMAC。**不要用"各自 mock"替代**——那会形成契约幻觉；正确做法是页面侧用本仓导出的 `@magical-index/alidocs-web-mcp/testing` 起真实桥做契约测试。

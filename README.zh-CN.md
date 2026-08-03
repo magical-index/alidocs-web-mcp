@@ -35,7 +35,7 @@
 ## 前置条件
 
 > [!IMPORTANT]
-> 这个桥只是**一半**。文档页面侧必须有配套的连接器来发现它并发起配对。缺了页面侧，桥能正常启动，但文档工具永远不会出现。
+> 这个桥只是**一半**。文档页面侧必须有配套的连接器来发现它并在 agent 指示时配对。连接器不会自己弹任何 UI；由 agent 在该页面调 `window.__docMcpWsBridge.pair(配对码)` 发起配对。缺了页面侧连接器，桥能正常启动，但文档工具永远不会出现。
 >
 > 目前该连接器在生产环境的钉钉文档中尚未全量开放。如果桥明显在运行、`get_bridge_status` 却一直是 `connected: false`，几乎可以肯定是这个原因，不是你配置错了。
 
@@ -81,7 +81,7 @@ npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工�
 三步，Agent 可以全程自己完成：
 
 1. 调 `get_pairing_code` → 拿到**配对码（一串数据）**和端口
-2. 把配对码填进页面的「本地 Agent」配对框 —— Agent 可以自己填写并点击，你也可以手动粘贴
+2. Agent 在**目标页面**（通常是文档 iframe 的 `contentWindow`）的控制台跑一行：`await window.__docMcpWsBridge.pair(配对码)`。只有 Agent 点名的那个页面会连上——连接器不会自己弹面板，其它浏览器/标签页保持静默
 3. 页面完成 HMAC 握手，此后 `tools/list` 就会包含文档工具
 
 刷新页面或同标签内跳转后，页面会用存在 `sessionStorage` 里的配对码自动重连，不需要再配对一次。
@@ -133,7 +133,7 @@ sequenceDiagram
     P->>B: 探测 19837/38/39 的 GET /health
     B-->>P: { service, originAllowed, ... }
 
-    Note over H,P: 配对码经 UI 进入页面（填写或粘贴）
+    Note over H,P: agent 在目标页面控制台调 window.__docMcpWsBridge.pair(code)
 
     P->>B: WS upgrade（此处校验 Origin → 不通过直接 403）
     B-->>P: challenge { nonce }
@@ -201,7 +201,7 @@ sequenceDiagram
 | 现象 | 可能原因 |
 | --- | --- |
 | `tools/list` 只有桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。若页面已配对但 host 仍看不到文档工具，可能是 host 不刷新 `tools/list`，可用 `call_page_tool` 兜底。 |
-| `get_bridge_status` 一直 `connected: false` | 页面没有连接器（见[前置条件](#前置条件)），或页面所在 origin 不在白名单里。 |
+| `get_bridge_status` 一直 `connected: false` | agent 还没在页面控制台调 `window.__docMcpWsBridge.pair(配对码)`，或页面没有连接器（见[前置条件](#前置条件)），或页面所在 origin 不在白名单里。 |
 | `ORIGIN_REJECTED` | 你的文档 origin 未被放行，用 `--allow-origin` 加上。 |
 | `PORT_CONTENDED` | 三个候选端口都被占了。腾一个，或用 `--port` 指定。 |
 | 重启桥后立刻 `AUTH_FAILED` | 预期行为：重启会轮换配对码，用新码重新配对。 |

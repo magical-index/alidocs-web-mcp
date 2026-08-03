@@ -6,7 +6,7 @@
  * ```
  *
  * bridge 自有工具（其余全部透传，bridge 不理解工具语义）：
- * - get_pairing_code：以「数据」下发配对码（高熵 secret），供页面填入配对框（S13：不返回可执行代码）
+ * - get_pairing_code：以「数据」下发配对码（高熵 secret），供 agent 在目标页控制台调 pair() 建连（S13：不返回可执行代码）
  * - get_bridge_status：桥状态与结构化诊断
  * - revoke_session：轮换密钥并断开当前会话（S11 撤销）
  * - call_page_tool：静态透传兜底；部分 host 不刷新 tools/list，可用它显式调用页面工具
@@ -59,9 +59,9 @@ export const LOCAL_TOOLS: ToolDefinition[] = [
     title: '获取配对码',
     description: [
       '返回把「当前浏览器里已打开的钉钉文档页面」接到本 bridge 所需的配对码（一串字符串数据）。',
-      '用法：把 pairingCode 与 port 交给页面的配对入口——',
-      '  · agent 场景：在文档页面的「连接本地 Agent」配对框里填入 pairingCode 并确认（如 fill + click）；',
-      '  · 人工场景：用户从终端复制配对码粘贴。',
+      '用法：agent 在**目标页面所在的浏览器上下文**里执行控制台命令建连——',
+      '  在该页面（通常是文档 iframe 的 contentWindow）调 `await window.__docMcpWsBridge.pair(pairingCode)`。',
+      '这样只有 agent 点名的那个页面会连上；其它浏览器/标签页不受影响，也不会弹任何 UI。',
       '页面据此与 bridge 完成挑战-响应握手（配对码只用于本地计算 HMAC，明文永不上线）。',
       '重要：本工具只返回数据，绝不返回需要执行的脚本；不要 eval 任何东西。',
       '握手成功后 tools/list 会包含文档工具。页面刷新后由页面用 sessionStorage 里的配对码自动重连，无需再次配对。',
@@ -342,12 +342,12 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
           {
             type: 'text',
             text: [
-              '配对码（把它填入文档页面的「连接本地 Agent」配对框，或让用户从终端复制粘贴）：',
+              '配对码（在目标页面的控制台调 window.__docMcpWsBridge.pair(“…”) 建连）：',
               '',
               pairingCode,
               '',
               `bridge 端口 ${listeningPort}；allowWrite=${config.allowWrite}。`,
-              '这是数据，不是脚本——请勿 eval，只需把它填进配对框。',
+              '这是数据，不是脚本——请勿 eval，只需作为参数传给 pair()。',
               '页面完成挑战-响应握手后，tools/list 即包含文档工具。',
             ].join('\n'),
           },
@@ -375,7 +375,7 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
         auditLog: audit.path,
         hint: sessions.connected
           ? '桥已建立，可直接调用文档工具'
-          : '未建桥：调用 get_pairing_code，在文档页面配对框填入配对码',
+          : '未建桥：调 get_pairing_code，在目标页面控制台调 window.__docMcpWsBridge.pair(code) 建连',
       };
       return {
         content: [{ type: 'text', text: JSON.stringify(status, null, 2) }],
