@@ -58,6 +58,29 @@ it('initialize 返回 bridge 自身的 serverInfo 与 tools 能力', async () =>
   expect(result.instructions).toMatch(/get_pairing_code/);
 });
 
+// 上一轮把建连改成 agent-only 时漏改了 router.ts，agent 拿到的 instructions 仍在
+// 教它去找一个已不存在的「配对框」。这里把建连指引钉死：既断言指向 pair()，也断言
+// 旧模型的措辞不再出现——否则文案回退不会有任何测试报警。
+it('instructions 与未建桥的错误提示都指向 pair(code)，不再提配对框', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+
+  const result = resultOf<InitializeResult>(await initializeHost(env.host));
+  expect(result.instructions).toContain('window.__docMcpWsBridge.pair');
+  expect(result.instructions).not.toContain('配对框');
+
+  // 未建桥时的工具错误也走同一份文案真源
+  const call = resultOf<ToolCallResult>(
+    await env.host.request('tools/call', {
+      name: 'call_page_tool',
+      arguments: { name: 'read_document', arguments: {} },
+    }),
+  );
+  const text = JSON.stringify(call.content);
+  expect(text).toContain('window.__docMcpWsBridge.pair');
+  expect(text).not.toContain('配对框');
+});
+
 it('initialize 对不支持的协议版本回落到最新版本', async () => {
   const env = await startTestBridge();
   onTestFinished(() => env.stop());

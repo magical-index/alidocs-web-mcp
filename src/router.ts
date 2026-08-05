@@ -28,11 +28,22 @@ export const ERROR_BRIDGE_UNAVAILABLE = -32001;
 const ERROR_METHOD_NOT_FOUND = -32601;
 const ERROR_INVALID_PARAMS = -32602;
 
+/**
+ * 「怎么建连」的唯一文案真源。
+ *
+ * 此前同一句指引在 4 处各写一份，页面侧改成 agent-only 建连时漏改了本文件，
+ * agent 拿到的仍是「去找配对框」。收成常量，改一次即全链路生效。
+ */
+export const PAIRING_HINT = [
+  '请先调用 get_pairing_code 取配对码，再在**目标文档页面**（通常是文档 iframe 的 contentWindow）',
+  '的控制台调 `await window.__docMcpWsBridge.pair(pairingCode)` 建连，然后重试。',
+].join('');
+
 export const INSTRUCTIONS = [
   '本 server 是钉钉文档（alidocs）的本地 MCP 桥。文档工具由「当前已建桥的文档页面」提供，',
   '因此接入分三步：',
   '1. 调用 get_pairing_code 获取配对码（字符串数据，不是脚本）；',
-  '2. 在已打开的钉钉文档页面的「连接本地 Agent」配对框里填入该配对码并确认（如 fill + click）；页面与 bridge 完成挑战-响应握手；',
+  '2. 在目标文档页面（通常是文档 iframe 的 contentWindow）的控制台调 `await window.__docMcpWsBridge.pair(pairingCode)`；连接器不会自己弹任何 UI，只有你点名的那个页面会与 bridge 完成挑战-响应握手；',
   '3. 之后 tools/list 会出现文档工具（read_document / get_blocks / update_block 等），按标准 MCP 调用。',
   '页面刷新/跳转后由页面用 sessionStorage 里的配对码自动重连；若工具调用返回 PAGE_DISCONNECTED，稍候重试或重新配对。',
   '写工具产生的改动停留在 diffBlock 建议态，accept_all_changes / reject_all_changes 必须先获得用户明确许可。',
@@ -168,7 +179,7 @@ export class Router {
         'PAGE_NOT_CONNECTED',
         [
           '桥未建立：call_page_tool 需要已建桥的钉钉文档页面。',
-          '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
+          PAIRING_HINT,
         ].join('\n'),
       );
     }
@@ -412,7 +423,7 @@ export class Router {
         'PAGE_NOT_CONNECTED',
         [
           '桥未建立：list_page_tools 需要已建桥的钉钉文档页面。',
-          '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
+          PAIRING_HINT,
         ].join('\n'),
       );
     }
@@ -466,10 +477,9 @@ export class Router {
         id,
         toolError(
           'PAGE_NOT_CONNECTED',
-          [
-            '桥未建立：文档工具由已建桥的钉钉文档页面提供。',
-            '请先调用 get_pairing_code，在文档页面配对框填入配对码完成握手，然后重试。',
-          ].join('\n'),
+          ['桥未建立：文档工具由已建桥的钉钉文档页面提供。', PAIRING_HINT].join(
+            '\n',
+          ),
         ),
       );
       return;
@@ -695,7 +705,7 @@ export class Router {
   private disconnectedData(code?: string): BridgeErrorData {
     return {
       code: code || 'PAGE_NOT_CONNECTED',
-      hint: '调用 get_pairing_code 获取配对码，在钉钉文档页配对框填入后重试',
+      hint: '调用 get_pairing_code 取配对码，在目标文档页面控制台调 window.__docMcpWsBridge.pair(code) 建连后重试',
     };
   }
 
