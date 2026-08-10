@@ -74,13 +74,34 @@ npx -y @magical-index/alidocs-web-mcp               # 只读
 npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工具
 ```
 
-桥会依次尝试 **19837 → 19838 → 19839**，用第一个空闲端口。页面靠探测这几个固定端口来发现它 —— 这也是端口固定而非随机的原因。
+默认情况下桥会依次尝试 **19837 → 19838 → 19839**，用第一个空闲端口。但端口不再是**身份**：自 0.2.0 起配对码的形状是 `<port>.<secret>`，页面直接连码里点名的那个端口，不再逐个探候选集。
+
+### 同时跑多个 Agent
+
+每个 Agent 宿主都会各起一个桥，三个固定端口很快就不够用——第四个启动直接报 `PORT_CONTENDED`；更麻烦的是页面只能发现占住第一个端口的那个桥。加 `--port 0` 让 OS 分配一个空闲的临时端口即可，端口已写在配对码里，其余什么都不用改：
+
+```json
+{
+  "mcpServers": {
+    "alidocs-web-mcp": {
+      "command": "npx",
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--port", "0", "--allow-write"]
+    }
+  }
+}
+```
+
+前提是**桥 ≥ 0.2.0**，且页面侧连接器认识这种复合码。老版本的桥只下发裸 secret，页面会退回逐个探候选端口——正是你想躲开的那种争抢。注意**全局安装的桥不会像 `npx -y` 那样自动更新**，需要显式升级：
+
+```bash
+npm i -g @magical-index/alidocs-web-mcp@latest
+```
 
 ## 配对流程
 
 三步，Agent 可以全程自己完成：
 
-1. 调 `get_pairing_code` → 拿到**配对码（一串数据）**和端口
+1. 调 `get_pairing_code` → 拿到**配对码（一串数据）**，端口已经以 `<port>.<secret>` 的形式含在里面
 2. Agent 在**目标页面**（通常是文档 iframe 的 `contentWindow`）的控制台跑一行：`await window.__docMcpWsBridge.pair(配对码)`。只有 Agent 点名的那个页面会连上——连接器不会自己弹面板，其它浏览器/标签页保持静默
 3. 页面完成 HMAC 握手，此后 `tools/list` 就会包含文档工具
 
@@ -125,19 +146,19 @@ sequenceDiagram
     participant P as 文档页面
     participant D as 文档
 
-    Note over B: 绑定 127.0.0.1，用 CSPRNG 生成本次会话的配对码
+    Note over B: 绑定 127.0.0.1，用 CSPRNG 生成本次会话的 secret
 
     H->>B: tools/call get_pairing_code
-    B-->>H: 配对码 + 端口（数据，绝非脚本）
+    B-->>H: 配对码 = "端口.secret"（数据，绝非脚本）
 
-    P->>B: 探测 19837/38/39 的 GET /health
+    P->>B: 探测配对码里那个端口的 GET /health
     B-->>P: { service, originAllowed, ... }
 
     Note over H,P: agent 在目标页面控制台调 window.__docMcpWsBridge.pair(code)
 
     P->>B: WS upgrade（此处校验 Origin → 不通过直接 403）
     B-->>P: challenge { nonce }
-    P->>B: auth { mac = HMAC-SHA256(配对码, nonce) }
+    P->>B: auth { mac = HMAC-SHA256(secret, nonce) }
     B-->>P: ready { sessionId }
     B->>H: notifications/tools/list_changed
 
@@ -154,7 +175,7 @@ sequenceDiagram
     Note over D: 由你决定应用还是弃用
 ```
 
-配对码本身从不上线，网络上只出现 `HMAC(配对码, nonce)`。即便有人抢占端口并截获了 mac，也反推不出配对码。
+配对码的 secret 段从不上线，网络上只出现 `HMAC(secret, nonce)`。即便有人抢占端口并截获了 mac，也反推不出 secret。（端口段不是凭证，它只说明「该连哪个桥」。）
 
 ## 桥自有工具
 
@@ -162,7 +183,7 @@ sequenceDiagram
 
 | 工具 | 作用 |
 | --- | --- |
-| `get_pairing_code` | 返回配对码（数据）、端口与写权限状态。**绝不返回脚本。** |
+| `get_pairing_code` | 返回配对码（数据，形状为 `<port>.<secret>`，页面据此连**本进程**而不是「谁先应答连谁」）、端口与写权限状态。**绝不返回脚本。** |
 | `get_bridge_status` | 端口、是否已配对、页面 MCP 会话是否就绪、在途请求数、Origin 白名单、审计日志路径。调用失败时先查这里。 |
 | `revoke_session` | 轮换配对码并断开会话，页面存的旧码立即失效。 |
 | `call_page_tool` | 静态透传兜底。部分 MCP host 在桥发送 `notifications/tools/list_changed` 后不会刷新工具清单，导致页面工具不可见。该工具恒定存在，只按 `{name, arguments}` 原样转发给页面，因此即使 host 的工具快照过期，也能直接调用 `read_document` / `insert_blocks` 等页面工具。 |
@@ -171,7 +192,7 @@ sequenceDiagram
 
 | 参数 | 说明 |
 | --- | --- |
-| `--port <n>` | 只用该端口，不走候选集 |
+| `--port <n>` | 只用该端口，不走候选集。`--port 0` 表示「OS 给哪个空闲端口就用哪个」——多个 Agent 各起一个桥时推荐这么配 |
 | `--allow-origin <pattern>` | 追加白名单条目（可重复）；`*` 只匹配单个 label 或端口，不跨 `.` `:` `/` |
 | `--only-origin <pattern>` | 完全替换默认白名单 |
 | `--allow-write` | 允许页面注册写工具（否则只读） |
@@ -203,7 +224,7 @@ sequenceDiagram
 | `tools/list` 只有桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。若页面已配对但 host 仍看不到文档工具，可能是 host 不刷新 `tools/list`，可用 `call_page_tool` 兜底。 |
 | `get_bridge_status` 一直 `connected: false` | agent 还没在页面控制台调 `window.__docMcpWsBridge.pair(配对码)`，或页面没有连接器（见[前置条件](#前置条件)），或页面所在 origin 不在白名单里。 |
 | `ORIGIN_REJECTED` | 你的文档 origin 未被放行，用 `--allow-origin` 加上。 |
-| `PORT_CONTENDED` | 三个候选端口都被占了。腾一个，或用 `--port` 指定。 |
+| `PORT_CONTENDED` | 三个候选端口都被占了，通常是被别的 Agent 的桥占着。用 `--port 0`（见[同时跑多个-agent](#同时跑多个-agent)），或腾一个出来。 |
 | 重启桥后立刻 `AUTH_FAILED` | 预期行为：重启会轮换配对码，用新码重新配对。 |
 | 调用中途 `PAGE_DISCONNECTED` | 页面跳转或刷新了。它会自己重连，重试即可。 |
 | `PAGE_TIMEOUT` | 页面在 `--request-timeout-ms` 内没有响应。 |
@@ -235,10 +256,10 @@ import { startTestBridge, connectFakePage, readyOf } from '@magical-index/alidoc
 
 早期（0.x）。目前已验证：
 
-- 56 个自动化用例：单元 + 端到端测源码，另有一组产物 smoke 拉起真实 CLI 进程验证发布形态
+- 75 个自动化用例：单元 + 端到端测源码，另有一组产物 smoke 拉起真实 CLI 进程验证发布形态
 - 12 类 Origin 绕过尝试（子域拼接、整 URL 塞进 Origin、尾部点、大写变体、协议降级、`null`、缺失、端口注入、反斜杠混淆等）在真实 upgrade 路径上全部被拒
 - 握手前发送的业务消息会被拒绝并关闭连接
-- 与页面侧的 HMAC 跨实现一致性，由共享测试向量钉住
+- 与页面侧在 HMAC 与配对码解析规则两处的跨实现一致性，由共享测试向量钉住
 
 **已知限制**：少数 MCP host 在 server 启动时抓一次 `tools/list` 快照，之后不再响应桥发送的 `notifications/tools/list_changed`。如果你的 host 在页面配对后仍看不到文档工具，可使用桥自有的 `call_page_tool`，按名字调用 `read_document` / `insert_blocks` 等页面工具——桥仍原样转发参数，不解释文档语义。
 

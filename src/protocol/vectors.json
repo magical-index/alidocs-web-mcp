@@ -34,5 +34,97 @@
     "secret": "pairing-secret-vector-0123456789abcdef",
     "nonce": "nonce-vector-fedcba9876543210",
     "expectedMac": "1acd9603ab467082875e53a582e8afa22a6cea4c28726443844845c7722c92a3"
+  },
+  "pairingCode": {
+    "separator": ".",
+    "portPattern": "^[1-9][0-9]{0,4}$",
+    "portMax": 65535,
+    "secretMustNotContainSeparator": true,
+    "cases": [
+      {
+        "code": "19837.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": 19837,
+        "secret": "4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R2 正常新格式"
+      },
+      {
+        "code": "4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R1 不含分隔符：0.1.x 桥下发的老格式码"
+      },
+      {
+        "code": "1.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": 1,
+        "secret": "4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R2 端口下界"
+      },
+      {
+        "code": "65535.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": 65535,
+        "secret": "4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R2 端口上界"
+      },
+      {
+        "code": "19837.dGVzdA",
+        "port": 19837,
+        "secret": "dGVzdA",
+        "why": "secret 段不是 hex 也照样解析：协议不变量是「不含分隔符」，不是「64 hex」"
+      },
+      {
+        "code": "0.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "0.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R3 端口 0 不是可连接端口"
+      },
+      {
+        "code": "019837.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "019837.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R3 前导零：若按十进制吃掉会连到端口 1983，连错端口比连不上更糟"
+      },
+      {
+        "code": "123456.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "123456.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R3 超过 5 位"
+      },
+      {
+        "code": "abc.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "abc.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R3 左段非数字"
+      },
+      {
+        "code": ".4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": ".4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R3 左段为空"
+      },
+      {
+        "code": "65536.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "port": null,
+        "secret": "65536.4f3c1d8a9b2e7c6f05a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2",
+        "why": "R4 形状合法但数值越界，范围要单独判"
+      },
+      {
+        "code": "19837.",
+        "port": null,
+        "secret": "19837.",
+        "why": "R5 secret 段为空"
+      },
+      {
+        "code": "19837.a.b",
+        "port": null,
+        "secret": "19837.a.b",
+        "why": "R6 secret 段含分隔符，无法判定哪段是 secret"
+      },
+      {
+        "code": " 19837.abc",
+        "port": null,
+        "secret": " 19837.abc",
+        "why": "解析不做 trim：裁剪是调用方职责，此处左段为「 19837」故退回整串"
+      }
+    ]
   }
 }

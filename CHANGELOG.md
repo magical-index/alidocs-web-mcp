@@ -2,6 +2,24 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.2.0] - 2026-08-10
+
+### 变更
+
+- **配对码改为复合 token `<port>.<secret>`**（对外行为变更，故走 minor）：`get_pairing_code` 下发的字符串里含桥的真实监听端口，页面据此**直连点名端口**，不再按 19837 → 19838 → 19839 的顺序探候选集。动机：多个 Agent 各起一个桥时，端口被当成实例标识，页面只能发现占住第一个端口的那个桥，其余桥的配对码会被送到错误的进程上、握手失败并误报成 `AUTH_FAILED`。HMAC **只对 secret 段**计算，明文仍永不上线；不含 `.` 的老格式码行为与 0.1.x 逐字一致（页面退回候选集探测）。
+- **`--port 0` 现在合法**，语义为「让 OS 分配一个空闲的临时端口」——多实例场景的推荐配置（端口由配对码携带，`PORT_CONTENDED` 的冲突面随之消失）。`-1` / `65536` / 非整数仍报错。
+- 默认监听行为不变：不带 `--port` 时仍是 19837 → 19838 → 19839。
+
+### 文档
+
+- README / 中文 README 新增「同时跑多个 Agent」小节（`--port 0`，以及全局安装需 `npm i -g @magical-index/alidocs-web-mcp@latest` 才会升级）；订正「端口必须固定，页面靠探测固定端口发现」的旧说法。
+- `docs/design.md` §3.1 前提修正（端口是数据，走配对码这条既有数据通道不引入新能力；固定候选集降级为兜底手段）、§3.2 与 §8 同步。
+
+### 说明
+
+- 新增 `src/protocol/pairingCode.ts`（`formatPairingCode` / `parsePairingCode`）与 `vectors.json` 的 `pairingCode` 用例表；解析规则由该向量表在两仓各自的测试里钉住。鉴权路径（`src/secrets.ts` / `src/session.ts` / `src/wsServer.ts`）零改动。
+- **多实例要真正生效，页面侧连接器也需支持复合码**；只升级桥不改页面时，页面会按老格式退回候选集探测。
+
 ## [0.1.1] - 2026-08-05
 
 ### 变更

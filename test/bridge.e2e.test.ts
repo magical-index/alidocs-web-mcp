@@ -167,11 +167,15 @@ it('get_pairing_code 返回配对码数据（非脚本），默认只读', async
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
 
-  const { response, status, pairingCode } = await fetchPairingCode(env.host);
+  const { response, status, pairingCode, secret, port } =
+    await fetchPairingCode(env.host);
   expect(status.port).toBe(env.port);
   expect(status.allowWrite).toBe(false);
   expect(status.pairingCode).toBe(pairingCode);
-  expect(pairingCode.length).toBe(64); // 256-bit hex
+  // 复合 token：端口段是真实监听端口，secret 段仍是 256-bit hex
+  expect(pairingCode).toBe(`${env.port}.${secret}`);
+  expect(port).toBe(env.port);
+  expect(secret.length).toBe(64);
   // S13：返回的是数据，不含可执行脚本
   const text = JSON.stringify(response.result);
   expect(!/=>/.test(text)).toBeTruthy();
@@ -260,20 +264,21 @@ it('S10：mac 由 secret+nonce 派生，secret 明文永不上线', async () => 
   const env = await startTestBridge();
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
-  const { pairingCode } = await fetchPairingCode(env.host);
+  const { pairingCode, secret } = await fetchPairingCode(env.host);
 
   const client = await connectWs({
     port: env.port,
     origin: 'https://alidocs.dingtalk.com',
   });
   const challenge = await client.nextJson<ChallengeMessage>();
-  // 页面发出的 auth 帧里只有 mac，没有配对码本身
-  const mac = computeMac(pairingCode, challenge.nonce);
+  // 页面发出的 auth 帧里只有 mac，没有配对码本身。mac 只对 secret 段算（INV-1）
+  const mac = computeMac(secret, challenge.nonce);
   client.sendJson({ docmcp: 2, type: 'auth', mac, client: {} });
   const ready = await client.nextJson<ReadyMessage>();
   expect(ready.type).toBe(CONTROL_TYPE.READY);
-  // 上线的消息里不得出现配对码明文
+  // 上线的消息里不得出现配对码明文——**secret 段**也不行（只查整串会漏掉「码里只上了 secret」）
   expect(!client.messages.some((m) => m.includes(pairingCode))).toBeTruthy();
+  expect(!client.messages.some((m) => m.includes(secret))).toBeTruthy();
 });
 
 it('握手超时未发 auth 的连接被 4009 关闭', async () => {
@@ -706,7 +711,7 @@ it('S9：审计日志记录会话与工具调用，且不含配对码与参数�
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
 
-  const { pairingCode } = await fetchPairingCode(env.host);
+  const { pairingCode, secret } = await fetchPairingCode(env.host);
   const page = await connectFakePage({ port: env.port, pairingCode });
   await env.host.waitNotification('notifications/tools/list_changed');
 
@@ -740,6 +745,8 @@ it('S9：审计日志记录会话与工具调用，且不含配对码与参数�
 
   const raw = JSON.stringify(entries);
   expect(!raw.includes(pairingCode)).toBeTruthy();
+  // secret 段单独查一遍：`pairing.issued` 会记端口，整串比对挡不住「只记了 secret」
+  expect(!raw.includes(secret)).toBeTruthy();
   expect(!raw.includes('secret-block-uuid')).toBeTruthy();
 });
 
@@ -771,7 +778,7 @@ it('challenge 携带桥支持区间；无区间的 v2 页面协商到 2', async 
   const env = await startTestBridge();
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
-  const { pairingCode } = await fetchPairingCode(env.host);
+  const { secret } = await fetchPairingCode(env.host);
 
   const client = await connectWs({
     port: env.port,
@@ -782,7 +789,7 @@ it('challenge 携带桥支持区间；无区间的 v2 页面协商到 2', async 
   expect(challenge.protocolMax).toBe(3);
   expect(typeof challenge.bridgeVersion).toBe('string');
 
-  const mac = computeMac(pairingCode, challenge.nonce);
+  const mac = computeMac(secret, challenge.nonce);
   // 老 v2 页面：docmcp=2 且不带 protocolMin/Max
   client.sendJson({ docmcp: 2, type: 'auth', mac, client: {} });
   const ready = await client.nextJson<ReadyMessage>();
@@ -795,14 +802,14 @@ it('声明 [3,3] 的 v3 页面协商到 3', async () => {
   const env = await startTestBridge();
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
-  const { pairingCode } = await fetchPairingCode(env.host);
+  const { secret } = await fetchPairingCode(env.host);
 
   const client = await connectWs({
     port: env.port,
     origin: 'https://alidocs.dingtalk.com',
   });
   const challenge = await client.nextJson<ChallengeMessage>();
-  const mac = computeMac(pairingCode, challenge.nonce);
+  const mac = computeMac(secret, challenge.nonce);
   client.sendJson({
     docmcp: 3,
     type: 'auth',
@@ -818,14 +825,14 @@ it('页面比桥新（[4,4]）→ PROTOCOL_MISMATCH + 关闭码 4004（提示升
   const env = await startTestBridge();
   onTestFinished(() => env.stop());
   await initializeHost(env.host);
-  const { pairingCode } = await fetchPairingCode(env.host);
+  const { secret } = await fetchPairingCode(env.host);
 
   const client = await connectWs({
     port: env.port,
     origin: 'https://alidocs.dingtalk.com',
   });
   const challenge = await client.nextJson<ChallengeMessage>();
-  const mac = computeMac(pairingCode, challenge.nonce);
+  const mac = computeMac(secret, challenge.nonce);
   // mac 正确（持码真实页面），但协议区间超出桥支持窗口
   client.sendJson({
     docmcp: 4,

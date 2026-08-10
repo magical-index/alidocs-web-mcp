@@ -18,6 +18,7 @@ import { createBridge, type Bridge, type PairingCodeStatus } from '../index.js';
 import type { BridgeErrorData, ToolDefinition } from '../router.js';
 import { connectWs, type TestWsClient } from './wsClient.js';
 import { computeMac } from '../protocol/crypto.js';
+import { parsePairingCode } from '../protocol/pairingCode.js';
 import {
   CONTROL_TYPE,
   PROTOCOL_VERSION,
@@ -271,11 +272,18 @@ export async function initializeHost(
   return response;
 }
 
-/** 调 get_pairing_code，返回原响应、结构化状态与配对码（= session secret） */
+/**
+ * 调 get_pairing_code，返回原响应、结构化状态与配对码。
+ *
+ * `pairingCode` 是复合 token `<port>.<secret>`（0.2.0 起）；`secret` / `port` 是它
+ * 解析后的两段。**算 mac 要用 `secret`**——整串传给 `computeMac` 必然 `AUTH_FAILED`。
+ */
 export async function fetchPairingCode(host: FakeHost): Promise<{
   response: HostMessage;
   status: PairingCodeStatus;
   pairingCode: string;
+  secret: string;
+  port: number | null;
 }> {
   const response = await host.request('tools/call', {
     name: 'get_pairing_code',
@@ -288,7 +296,8 @@ export async function fetchPairingCode(host: FakeHost): Promise<{
       `get_pairing_code 未返回配对码: ${JSON.stringify(response)}`,
     );
   }
-  return { response, status, pairingCode: status.pairingCode };
+  const { port, secret } = parsePairingCode(status.pairingCode);
+  return { response, status, pairingCode: status.pairingCode, secret, port };
 }
 
 export interface PageToolDefinition {
@@ -324,6 +333,10 @@ export function handshakeErrorOf(page: FakePage): ErrorMessage {
 
 export interface ConnectFakePageOptions {
   port: number;
+  /**
+   * `get_pairing_code` 下发的原文。复合 token（`<port>.<secret>`）与老格式裸 secret
+   * 都接受——内部按真实页面的做法解析后**只用 secret 段**算 mac。
+   */
   pairingCode: string;
   origin?: string;
   tools?: PageToolDefinition[];
@@ -353,6 +366,11 @@ export async function connectFakePage(
     badMac = false,
   } = options;
 
+  // 与真实页面同构：HMAC 只对 secret 段计算（S10 / INV-1）。
+  // 整串复合 token 传进 computeMac 会得到一个对不上的 mac，表现为 AUTH_FAILED——
+  // 和「连到了错误的桥」现象完全一样，是本改动最容易被误诊的失败模式。
+  const { secret } = parsePairingCode(pairingCode);
+
   const client = await connectWs({ port, origin });
   /** 收到的 JSON-RPC 消息；与返回值共享同一引用，供调用方观察 */
   const requests: HostMessage[] = [];
@@ -375,7 +393,7 @@ export async function connectFakePage(
       if (message.type === CONTROL_TYPE.CHALLENGE) {
         const mac = badMac
           ? 'f'.repeat(64)
-          : computeMac(pairingCode, message.nonce ?? '');
+          : computeMac(secret, message.nonce ?? '');
         client.sendJson({
           docmcp: PROTOCOL_VERSION,
           type: CONTROL_TYPE.AUTH,

@@ -74,13 +74,34 @@ npx -y @magical-index/alidocs-web-mcp              # read-only
 npx -y @magical-index/alidocs-web-mcp --allow-write # allow the page to register write tools
 ```
 
-The bridge tries ports **19837 → 19838 → 19839** and takes the first free one. The page discovers it by probing those same ports, which is why they are fixed rather than random.
+By default the bridge tries ports **19837 → 19838 → 19839** and takes the first free one. The port is no longer an *identity*, though: since 0.2.0 the pairing code is `<port>.<secret>`, so the page connects straight to the port named in the code instead of probing the candidate list.
+
+### Several agents at once
+
+Every agent host starts its own bridge, so three fixed ports run out quickly — the fourth start fails with `PORT_CONTENDED`, and worse, the pages can only ever discover whoever holds the first port. Pass `--port 0` to let the OS hand out a free ephemeral port; the pairing code carries it, so nothing else changes:
+
+```json
+{
+  "mcpServers": {
+    "alidocs-web-mcp": {
+      "command": "npx",
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--port", "0", "--allow-write"]
+    }
+  }
+}
+```
+
+This needs **bridge ≥ 0.2.0** together with a page connector that understands the composite code. An older bridge hands out a bare secret, and the page then falls back to probing the candidate ports — exactly the contention you were trying to escape. Note that a *globally installed* bridge does not refresh itself the way `npx -y` does, so upgrade it explicitly:
+
+```bash
+npm i -g @magical-index/alidocs-web-mcp@latest
+```
 
 ## How pairing works
 
 Three steps, and the agent can drive all of them:
 
-1. Call `get_pairing_code` → you get a **pairing code (a string of data)** and the port.
+1. Call `get_pairing_code` → you get a **pairing code (a string of data)**, with the port already embedded in it as `<port>.<secret>`.
 2. The agent runs one console command **in the target page** (usually the document iframe's `contentWindow`): `await window.__docMcpWsBridge.pair(pairingCode)`. Only the page the agent points at connects — the connector never pops a panel on its own, so other browsers/tabs stay silent.
 3. The page completes an HMAC handshake. From then on `tools/list` includes the document tools.
 
@@ -125,19 +146,19 @@ sequenceDiagram
     participant P as Document page
     participant D as Document
 
-    Note over B: bind 127.0.0.1, generate a per-session pairing code (CSPRNG)
+    Note over B: bind 127.0.0.1, generate a per-session secret (CSPRNG)
 
     H->>B: tools/call get_pairing_code
-    B-->>H: pairingCode + port (data, never a script)
+    B-->>H: pairingCode = "port.secret" (data, never a script)
 
-    P->>B: GET /health on 19837/38/39
+    P->>B: GET /health on the port from the code
     B-->>P: { service, originAllowed, ... }
 
     Note over H,P: the agent runs window.__docMcpWsBridge.pair(code) in the target page's console
 
     P->>B: WS upgrade (Origin checked here → 403 if not allowed)
     B-->>P: challenge { nonce }
-    P->>B: auth { mac = HMAC-SHA256(pairingCode, nonce) }
+    P->>B: auth { mac = HMAC-SHA256(secret, nonce) }
     B-->>P: ready { sessionId }
     B->>H: notifications/tools/list_changed
 
@@ -154,7 +175,7 @@ sequenceDiagram
     Note over D: you approve or discard it
 ```
 
-The pairing code itself is never transmitted — only `HMAC(code, nonce)` is. Someone who squats the port and captures the mac still cannot recover the code.
+The secret half of the pairing code is never transmitted — only `HMAC(secret, nonce)` is. Someone who squats the port and captures the mac still cannot recover the secret. (The port half is not a credential; it only says *which* bridge to talk to.)
 
 ## Bridge tools
 
@@ -162,7 +183,7 @@ Everything else you see in `tools/list` comes from the page; the bridge only for
 
 | Tool | What it does |
 | --- | --- |
-| `get_pairing_code` | Returns the pairing code (data) plus the port and write-permission state. **Never returns a script.** |
+| `get_pairing_code` | Returns the pairing code (data) — `<port>.<secret>`, so the page reaches *this* bridge and not whichever one answers first — plus the port and write-permission state. **Never returns a script.** |
 | `get_bridge_status` | Port, whether a page is paired, whether its MCP session is ready, in-flight requests, Origin allowlist, audit log path. Start here when a call fails. |
 | `revoke_session` | Rotates the pairing code and drops the session. Anything the page stored becomes invalid immediately. |
 | `call_page_tool` | Static passthrough. Some MCP hosts do not refresh `tools/list` after the bridge notifies them that page tools appeared. This tool is always present and forwards `{name, arguments}` to the page verbatim, so you can still call `read_document` / `insert_blocks` etc. even when the host's tool snapshot is stale. |
@@ -171,7 +192,7 @@ Everything else you see in `tools/list` comes from the page; the bridge only for
 
 | Flag | Meaning |
 | --- | --- |
-| `--port <n>` | Use only this port instead of the candidate set |
+| `--port <n>` | Use only this port instead of the candidate set. `--port 0` means "any free port the OS gives you" — the recommended setting when several agents each run their own bridge |
 | `--allow-origin <pattern>` | Append an allowlist entry (repeatable); `*` matches a single label or port, never across `.` `:` `/` |
 | `--only-origin <pattern>` | Replace the default allowlist entirely |
 | `--allow-write` | Allow the page to register write tools (read-only otherwise) |
@@ -203,7 +224,7 @@ Full threat model and the S1–S13 control list: **[docs/security.md](./docs/sec
 | `tools/list` only shows the bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. If the page is paired but the host still does not see document tools, the host may not refresh `tools/list`; use `call_page_tool` as a fallback. |
 | `get_bridge_status` shows `connected: false` forever | The agent has not run `window.__docMcpWsBridge.pair(code)` in the page yet, or the page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
 | `ORIGIN_REJECTED` | Your document origin is not allowlisted. Add it with `--allow-origin`. |
-| `PORT_CONTENDED` | All three candidate ports are taken. Free one, or pass `--port`. |
+| `PORT_CONTENDED` | All three candidate ports are taken — usually by other agents' bridges. Pass `--port 0` (see [Several agents at once](#several-agents-at-once)), or free one. |
 | `AUTH_FAILED` right after a bridge restart | Expected: restarting rotates the code. Pair again with the fresh one. |
 | `PAGE_DISCONNECTED` mid-call | The page navigated or refreshed. It reconnects on its own; retry the call. |
 | `PAGE_TIMEOUT` | The page did not answer within `--request-timeout-ms`. |
@@ -235,10 +256,10 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) and [AGENT.md](./AGENT.md) (the latter 
 
 Early (0.x). Verified today:
 
-- 56 automated tests: unit + end-to-end against the sources, plus an artifact smoke that runs the built CLI as a real process
+- 75 automated tests: unit + end-to-end against the sources, plus an artifact smoke that runs the built CLI as a real process
 - 12 Origin bypass attempts (subdomain suffixing, full-URL-in-Origin, trailing dot, case variants, scheme downgrade, `null`, missing, port injection, backslash confusion) all rejected at the real upgrade path
 - Business messages sent before the handshake are rejected and the socket closed
-- Cross-implementation HMAC agreement with the page side, pinned by shared test vectors
+- Cross-implementation agreement with the page side on both the HMAC and the pairing-code parse rules, pinned by shared test vectors
 
 **Known limitation:** a small number of MCP hosts take a snapshot of `tools/list` at server startup and do not update it when the bridge sends `notifications/tools/list_changed`. If your host does not see page tools after pairing, use the bridge's own `call_page_tool` to invoke them by name (`read_document`, `insert_blocks`, etc.) — the bridge still forwards arguments verbatim and never interprets document semantics.
 

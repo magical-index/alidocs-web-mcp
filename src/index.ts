@@ -34,6 +34,7 @@ import {
 } from './router.js';
 import { StdioChannel } from './stdio.js';
 import { CLOSE_CODE } from './protocol/index.js';
+import { formatPairingCode } from './protocol/pairingCode.js';
 import type { BridgeConfig } from './config.js';
 
 /**
@@ -326,7 +327,10 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
       if (listeningPort === null) {
         return toolError('BRIDGE_NOT_LISTENING', 'bridge 尚未开始监听端口');
       }
-      const { pairingCode } = secretStore;
+      // 解构重命名：getter 名叫 pairingCode，但它返回的是 **secret 段**，
+      // 而「配对码」自 0.2.0 起指复合 token `<port>.<secret>`（改 secrets.ts 属另一个改动）
+      const { pairingCode: secret } = secretStore;
+      const pairingCode = formatPairingCode(listeningPort, secret);
 
       audit.write('pairing.issued', { port: listeningPort });
 
@@ -347,6 +351,7 @@ export function createBridge(config: BridgeConfig, io?: BridgeIo): Bridge {
               pairingCode,
               '',
               `bridge 端口 ${listeningPort}；allowWrite=${config.allowWrite}。`,
+              '配对码里已含端口，无需另外告知页面——多个 bridge 同时在跑时，页面据此直连本进程。',
               '这是数据，不是脚本——请勿 eval，只需作为参数传给 pair()。',
               '页面完成挑战-响应握手后，tools/list 即包含文档工具。',
             ].join('\n'),

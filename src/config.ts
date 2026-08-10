@@ -177,10 +177,12 @@ export function parseArgs(argv: readonly string[]): BridgeConfig {
 
   config.allowedOrigins = config.allowedOrigins.concat(extraOrigins);
   // 显式 --port：只用该端口（候选集收敛为单元素）；否则用默认候选集
+  // `0` 是合法取值，语义为「让 OS 分配临时端口」——多实例的正解：配对码里已含端口，
+  // 端口不再是实例标识，所以「随便给一个能用的」比「抢固定端口」更对。
   if (explicitPort !== null) {
     if (
       !Number.isInteger(explicitPort) ||
-      explicitPort < 1 ||
+      explicitPort < 0 ||
       explicitPort > 65535
     ) {
       throw new Error(`--port 非法: ${explicitPort}`);
