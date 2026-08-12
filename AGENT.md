@@ -11,6 +11,12 @@
 - [docs/design.md](./docs/design.md) — 链路、三个不可拆分的耦合、哑管道设计、会话生命周期、已知取舍
 - [docs/security.md](./docs/security.md) — 四方向威胁模型、凭证模型、握手、端点契约、S1–S13 措施清单
 
+面向使用者的产物（改行为时需同步）：
+
+- [skills/alidocs-edit-routing/SKILL.md](./skills/alidocs-edit-routing/SKILL.md) — 配套 Agent Skill：改已有钉钉文字文档前，在「dws 直改」与「本桥建议态」之间路由。随 npm 包发布（`package.json` 的 `files` 含 `skills`）。职责边界：**只管路由**——dws 用法交给 `dws` skill，文档工具用法交给工具自描述，两者都不得在 SKILL.md 里复述
+
+面向内部用户的安装手册与推广文稿**不入本仓**（渠道与受众与开源 README 不同，分开维护）。本仓只留 README（安装与参考）+ `docs/`（设计与安全）。
+
 ## 2. 目录结构与模块边界
 
 ```
@@ -37,6 +43,9 @@ test/                   ← Vitest（TypeScript）
   unit.test.ts         帧编解码 / Origin / secret / 协议一致性（测 src）
   bridge.e2e.test.ts   端到端链路（测 src）
   artifact.test.ts     产物 smoke（测 dist：shebang、exports、vectors、真实 CLI 进程）
+docs/                  ← 设计 / 安全 / RFC 单一真源，随包发布
+skills/                ← 配套 Agent Skill（随包发布），不参与构建与测试
+  alidocs-edit-routing/SKILL.md   改文档前的通道路由（只管路由，不复述 dws / 工具用法）
 ```
 
 **技术栈**：TypeScript 7（`tsc` 直出，无打包器）· Vitest 4 · Biome 2（lint + format）· publint + attw（包形状）。全部 devDependencies，产物零运行时依赖。

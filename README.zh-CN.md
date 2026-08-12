@@ -97,6 +97,34 @@ npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工�
 npm i -g @magical-index/alidocs-web-mcp@latest
 ```
 
+### 配套 skill（可选，需手动安装）
+
+`skills/alidocs-edit-routing/` 是一份 Agent Skill：改已有钉钉文字文档前，让 agent 先问你走「dws 直改」还是「本桥建议态」，而不是闷头选一条直接落盘。它随 npm 包发布，但**不会自动生效**——得自己放到 host 的 skills 目录。
+
+各 host 都是「一个目录一个 skill」，且**目录名必须与 `SKILL.md` 里的 `name` 一致**：
+
+| Host | skills 目录 |
+| --- | --- |
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.agents/skills/` |
+| Qoder | `~/.qoder/skills/` |
+
+从已全局安装的包里软链（推荐：升包后 skill 跟着更新）：
+
+```bash
+SKILL="$(npm root -g)/@magical-index/alidocs-web-mcp/skills/alidocs-edit-routing"
+ln -s "$SKILL" ~/.claude/skills/alidocs-edit-routing
+```
+
+用 `npx -y` 跑桥的没有稳定的本地包路径，从仓库取：
+
+```bash
+git clone https://github.com/magical-index/alidocs-web-mcp.git
+ln -s "$PWD/alidocs-web-mcp/skills/alidocs-edit-routing" ~/.claude/skills/alidocs-edit-routing
+```
+
+两件事需要注意：**新开一个会话才生效**（host 在会话启动时读 skills 目录）；它把 `dws` 当作前置 skill，没有 dws 时「直改」那条通道走不通。若你装的包版本早于该目录引入，`skills/` 不存在，请升级或直接从仓库取。
+
 ## 配对流程
 
 三步，Agent 可以全程自己完成：
@@ -134,7 +162,7 @@ flowchart LR
 两个值得留意的性质：
 
 - **永远由页面发起**。桥只在环回地址上监听，从不主动连浏览器。
-- **桥是哑管道**。除自有的三个工具外，它只做 `tools/list` 合并与 `tools/call` 原样转发，不理解文档语义 —— 因此页面新增工具无需改桥。
+- **桥是哑管道**。除自有的少数几个工具外，它只做 `tools/list` 合并与 `tools/call` 原样转发，不理解文档语义 —— 因此页面新增工具无需改桥。
 
 ## 数据流
 
@@ -186,7 +214,10 @@ sequenceDiagram
 | `get_pairing_code` | 返回配对码（数据，形状为 `<port>.<secret>`，页面据此连**本进程**而不是「谁先应答连谁」）、端口与写权限状态。**绝不返回脚本。** |
 | `get_bridge_status` | 端口、是否已配对、页面 MCP 会话是否就绪、在途请求数、Origin 白名单、审计日志路径。调用失败时先查这里。 |
 | `revoke_session` | 轮换配对码并断开会话，页面存的旧码立即失效。 |
-| `call_page_tool` | 静态透传兜底。部分 MCP host 在桥发送 `notifications/tools/list_changed` 后不会刷新工具清单，导致页面工具不可见。该工具恒定存在，只按 `{name, arguments}` 原样转发给页面，因此即使 host 的工具快照过期，也能直接调用 `read_document` / `insert_blocks` 等页面工具。 |
+| `list_page_tools` | 静态兜底之一。只读列出已建桥页面提供的工具（名字、描述、参数 schema），供工具快照过期的 host 先发现再调用。 |
+| `call_page_tool` | 静态透传兜底。部分 MCP host 在桥发送 `notifications/tools/list_changed` 后不会刷新工具清单，导致页面工具不可见。它只按 `{name, arguments}` 原样转发给页面，因此即使 host 的工具快照过期，也能直接调用 `read_document` / `insert_blocks` 等页面工具。 |
+
+最后两个是**静态兜底工具**，是否出现由 `--host-profile` 决定：`auto`（默认）下只对**确信遵守 `tools/list_changed` 的 host**（目前仅 Claude 系）隐藏，未知 host 一律当作不遵守而暴露——宁可多两个工具的噪音，也不让真需要兜底的 host 看不到工具。
 
 ## CLI 参数
 
@@ -196,6 +227,7 @@ sequenceDiagram
 | `--allow-origin <pattern>` | 追加白名单条目（可重复）；`*` 只匹配单个 label 或端口，不跨 `.` `:` `/` |
 | `--only-origin <pattern>` | 完全替换默认白名单 |
 | `--allow-write` | 允许页面注册写工具（否则只读） |
+| `--host-profile <p>` | 静态兜底工具画像：`auto`（默认，未知 host 露兜底）/ `static`（总是露，给不刷新工具清单的 host）/ `standard`（从不露） |
 | `--audit-log <path>` / `--no-audit` | 审计日志位置，默认 `~/.alidocs-web-mcp/audit.log` |
 | `--handshake-timeout-ms <n>` | 握手时限，默认 10000 |
 | `--request-timeout-ms <n>` | 转发给页面的请求超时，默认 60000 |
@@ -221,7 +253,7 @@ sequenceDiagram
 
 | 现象 | 可能原因 |
 | --- | --- |
-| `tools/list` 只有桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。若页面已配对但 host 仍看不到文档工具，可能是 host 不刷新 `tools/list`，可用 `call_page_tool` 兜底。 |
+| `tools/list` 只有桥工具 | 还没有页面配对成功。调 `get_pairing_code` 走完配对。若页面已配对但 host 仍看不到文档工具，先用 `list_page_tools` 发现工具与参数，再用 `call_page_tool` 按名调用；若这两个兜底工具也不在清单里，用 `--host-profile static` 强制暴露。 |
 | `get_bridge_status` 一直 `connected: false` | agent 还没在页面控制台调 `window.__docMcpWsBridge.pair(配对码)`，或页面没有连接器（见[前置条件](#前置条件)），或页面所在 origin 不在白名单里。 |
 | `ORIGIN_REJECTED` | 你的文档 origin 未被放行，用 `--allow-origin` 加上。 |
 | `PORT_CONTENDED` | 三个候选端口都被占了，通常是被别的 Agent 的桥占着。用 `--port 0`（见[同时跑多个-agent](#同时跑多个-agent)），或腾一个出来。 |
@@ -261,10 +293,11 @@ import { startTestBridge, connectFakePage, readyOf } from '@magical-index/alidoc
 - 握手前发送的业务消息会被拒绝并关闭连接
 - 与页面侧在 HMAC 与配对码解析规则两处的跨实现一致性，由共享测试向量钉住
 
-**已知限制**：少数 MCP host 在 server 启动时抓一次 `tools/list` 快照，之后不再响应桥发送的 `notifications/tools/list_changed`。如果你的 host 在页面配对后仍看不到文档工具，可使用桥自有的 `call_page_tool`，按名字调用 `read_document` / `insert_blocks` 等页面工具——桥仍原样转发参数，不解释文档语义。
+**已知限制**：少数 MCP host 在 server 启动时抓一次 `tools/list` 快照，之后不再响应桥发送的 `notifications/tools/list_changed`。因为 MCP 规范里没有声明该能力的标准字段，桥只能在 `initialize` 阶段靠 `clientInfo` 保守判定：**未知 host 一律当作不遵守**，因此默认就会露出 `list_page_tools` / `call_page_tool` 两个静态兜底工具——先用前者发现页面工具与参数，再用后者按名调用（桥仍原样转发参数，不解释文档语义）。
 
 ## 文档
 
+- [skills/alidocs-edit-routing/](./skills/alidocs-edit-routing/SKILL.md) —— 配套 skill：改文档前先在「dws 直改」与「交互式审批」之间路由
 - [docs/design.md](./docs/design.md) —— 设计、取舍，以及三个不可拆分的耦合
 - [docs/security.md](./docs/security.md) —— 威胁模型与措施清单
 - [AGENT.md](./AGENT.md) —— AI Agent 在本仓工作的约定

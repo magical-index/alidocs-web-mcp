@@ -97,6 +97,34 @@ This needs **bridge ≥ 0.2.0** together with a page connector that understands 
 npm i -g @magical-index/alidocs-web-mcp@latest
 ```
 
+### Companion skill (optional, manual install)
+
+`skills/alidocs-edit-routing/` is an Agent Skill: before changing an existing DingTalk text document, it makes the agent ask you whether to go through **dws direct write** or **this bridge's suggestion mode**, instead of silently picking one and committing. It ships inside the npm package but **does not activate on its own** — you have to drop it into your host's skills directory.
+
+Every host uses one directory per skill, and the **directory name must match the `name` in `SKILL.md`**:
+
+| Host | Skills directory |
+| --- | --- |
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.agents/skills/` |
+| Qoder | `~/.qoder/skills/` |
+
+Symlink it out of a global install (recommended — the skill then follows package upgrades):
+
+```bash
+SKILL="$(npm root -g)/@magical-index/alidocs-web-mcp/skills/alidocs-edit-routing"
+ln -s "$SKILL" ~/.claude/skills/alidocs-edit-routing
+```
+
+If you run the bridge via `npx -y` there is no stable local package path — take it from the repo instead:
+
+```bash
+git clone https://github.com/magical-index/alidocs-web-mcp.git
+ln -s "$PWD/alidocs-web-mcp/skills/alidocs-edit-routing" ~/.claude/skills/alidocs-edit-routing
+```
+
+Two things to know: it **only takes effect in a new session** (hosts read the skills directory at session start), and it treats `dws` as a prerequisite skill — without dws the "direct write" channel is not available. If the version you installed predates this directory, `skills/` will be missing; upgrade or take it from the repo.
+
 ## How pairing works
 
 Three steps, and the agent can drive all of them:
@@ -134,7 +162,7 @@ flowchart LR
 Two properties worth noting:
 
 - **The page always initiates.** The bridge only listens on loopback; it never dials into the browser.
-- **The bridge is a dumb pipe.** Beyond its own three tools, it merges `tools/list` and forwards `tools/call` verbatim. It does not understand document semantics — so the page can add tools without changing the bridge.
+- **The bridge is a dumb pipe.** Beyond its own handful of tools, it merges `tools/list` and forwards `tools/call` verbatim. It does not understand document semantics — so the page can add tools without changing the bridge.
 
 ## Data flow
 
@@ -186,7 +214,10 @@ Everything else you see in `tools/list` comes from the page; the bridge only for
 | `get_pairing_code` | Returns the pairing code (data) — `<port>.<secret>`, so the page reaches *this* bridge and not whichever one answers first — plus the port and write-permission state. **Never returns a script.** |
 | `get_bridge_status` | Port, whether a page is paired, whether its MCP session is ready, in-flight requests, Origin allowlist, audit log path. Start here when a call fails. |
 | `revoke_session` | Rotates the pairing code and drops the session. Anything the page stored becomes invalid immediately. |
-| `call_page_tool` | Static passthrough. Some MCP hosts do not refresh `tools/list` after the bridge notifies them that page tools appeared. This tool is always present and forwards `{name, arguments}` to the page verbatim, so you can still call `read_document` / `insert_blocks` etc. even when the host's tool snapshot is stale. |
+| `list_page_tools` | Static fallback. Read-only listing of the tools the paired page exposes (name, description, argument schema), so a host with a stale snapshot can discover before calling. |
+| `call_page_tool` | Static passthrough. Some MCP hosts do not refresh `tools/list` after the bridge notifies them that page tools appeared. It forwards `{name, arguments}` to the page verbatim, so you can still call `read_document` / `insert_blocks` etc. even when the host's tool snapshot is stale. |
+
+The last two are **static fallback tools**; whether they appear is decided by `--host-profile`. Under `auto` (the default) they are hidden only from hosts **known** to honor `tools/list_changed` (currently only the Claude family); every unknown host is treated as non-compliant and gets them — two extra tools of noise beats a host that needs the fallback not seeing any tools at all.
 
 ## CLI options
 
@@ -196,6 +227,7 @@ Everything else you see in `tools/list` comes from the page; the bridge only for
 | `--allow-origin <pattern>` | Append an allowlist entry (repeatable); `*` matches a single label or port, never across `.` `:` `/` |
 | `--only-origin <pattern>` | Replace the default allowlist entirely |
 | `--allow-write` | Allow the page to register write tools (read-only otherwise) |
+| `--host-profile <p>` | Static fallback tool profile: `auto` (default — unknown hosts get them) / `static` (always expose, for hosts that never refresh `tools/list`) / `standard` (never expose) |
 | `--audit-log <path>` / `--no-audit` | Audit log location, default `~/.alidocs-web-mcp/audit.log` |
 | `--handshake-timeout-ms <n>` | Handshake deadline, default 10000 |
 | `--request-timeout-ms <n>` | Timeout for requests forwarded to the page, default 60000 |
@@ -221,7 +253,7 @@ Full threat model and the S1–S13 control list: **[docs/security.md](./docs/sec
 
 | Symptom | Likely cause |
 | --- | --- |
-| `tools/list` only shows the bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. If the page is paired but the host still does not see document tools, the host may not refresh `tools/list`; use `call_page_tool` as a fallback. |
+| `tools/list` only shows the bridge tools | No page is paired yet. Run `get_pairing_code` and complete pairing. If the page is paired but the host still does not see document tools, use `list_page_tools` to discover the tools and their arguments, then `call_page_tool` to invoke them by name; if those two fallback tools are missing too, force them with `--host-profile static`. |
 | `get_bridge_status` shows `connected: false` forever | The agent has not run `window.__docMcpWsBridge.pair(code)` in the page yet, or the page has no connector (see [Requirements](#requirements)), or the page is on an origin outside the allowlist. |
 | `ORIGIN_REJECTED` | Your document origin is not allowlisted. Add it with `--allow-origin`. |
 | `PORT_CONTENDED` | All three candidate ports are taken — usually by other agents' bridges. Pass `--port 0` (see [Several agents at once](#several-agents-at-once)), or free one. |
@@ -261,10 +293,11 @@ Early (0.x). Verified today:
 - Business messages sent before the handshake are rejected and the socket closed
 - Cross-implementation agreement with the page side on both the HMAC and the pairing-code parse rules, pinned by shared test vectors
 
-**Known limitation:** a small number of MCP hosts take a snapshot of `tools/list` at server startup and do not update it when the bridge sends `notifications/tools/list_changed`. If your host does not see page tools after pairing, use the bridge's own `call_page_tool` to invoke them by name (`read_document`, `insert_blocks`, etc.) — the bridge still forwards arguments verbatim and never interprets document semantics.
+**Known limitation:** a small number of MCP hosts take a snapshot of `tools/list` at server startup and do not update it when the bridge sends `notifications/tools/list_changed`. Since the MCP spec has no standard field declaring that capability, the bridge can only judge conservatively from `clientInfo` at `initialize`: **every unknown host is treated as non-compliant**, so by default it exposes the two static fallback tools `list_page_tools` / `call_page_tool` — discover page tools and their arguments with the former, then invoke them by name with the latter (the bridge still forwards arguments verbatim and never interprets document semantics).
 
 ## Documentation
 
+- [skills/alidocs-edit-routing/](./skills/alidocs-edit-routing/SKILL.md) — companion skill: route between "dws direct write" and "interactive review" before editing a doc
 - [docs/design.md](./docs/design.md) — design, trade-offs, and the three couplings you cannot separate
 - [docs/security.md](./docs/security.md) — threat model and control list
 - [AGENT.md](./AGENT.md) — conventions for AI agents working on this repo
