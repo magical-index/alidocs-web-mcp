@@ -201,6 +201,8 @@ MCP host（IDE / 终端 / Qoder） --stdio JSON-RPC--> alidocs-web-mcp（桥·�
 ### 5.2 B2 — 内置「稳定核心工具清单」为一等静态工具（中期）🔲
 
 - 桥从**启动即**把文档核心工具（`read_document`/`get_blocks`/`get_document_metadata`/`search`/`update_block`/`insert_blocks`/`delete_blocks`/`accept_all_changes`/`reject_all_changes`/`get_doc_skill`）**作为一等 MCP 工具**列出（配对前即可见，真实 per-tool schema）。
+
+  > **时效注（后于本 RFC）**：`accept_all_changes` / `reject_all_changes` 已由 we-word 页面侧整体下线，不再向 agent 透出——落盘裁决权只属于用户（见 we-word `rfcs/mcp-hide-accept-reject-tools.md`）。本方案若实施，静态清单应剔除这两项。上文保留原样以存决策记录。
 - 调用路由到页面；未配对 → `PAGE_NOT_CONNECTED` + 配对指引；写工具在 `allowWrite=false` 时按 security S5 处理。
 - 代价与张力：桥需**内置一份工具清单**，**削弱哑管道纯度**；且清单要应对灰度/版本差异（与需求 A 挂钩）。
 - **化解**：只内置**长期稳定核心**（versioned manifest），灰度专属/更新的工具仍走 `call_page_tool` 兜底；配对后对**遵守通知**的宿主仍给「实时合并列表 + listChanged」，两条路并存。

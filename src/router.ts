@@ -46,7 +46,7 @@ export const INSTRUCTIONS = [
   '2. 在目标文档页面（通常是文档 iframe 的 contentWindow）的控制台调 `await window.__docMcpWsBridge.pair(pairingCode)`；连接器不会自己弹任何 UI，只有你点名的那个页面会与 bridge 完成挑战-响应握手；',
   '3. 之后 tools/list 会出现文档工具（read_document / get_blocks / update_block 等），按标准 MCP 调用。',
   '页面刷新/跳转后由页面用 sessionStorage 里的配对码自动重连；若工具调用返回 PAGE_DISCONNECTED，稍候重试或重新配对。',
-  '写工具产生的改动停留在 diffBlock 建议态，accept_all_changes / reject_all_changes 必须先获得用户明确许可。',
+  '写工具产生的改动停留在 diffBlock 建议态。落盘（接受）与撤销（拒绝）需要由用户在文档界面操作，你没有对应工具。',
   '若你的宿主在 server 启动后不刷新 tools/list（配对后仍看不到 read_document 等文档工具），',
   '先调用 list_page_tools 查看页面当前可用的工具与参数，再用 call_page_tool 按名调用。',
 ].join('\n');
