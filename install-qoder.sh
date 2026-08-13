@@ -51,8 +51,15 @@ bootstrap_from_repo() {
   git clone --depth 1 --quiet "$REPO_URL" "$_tmp/repo" || die "clone 失败：${REPO_URL}"
   [ -f "$_tmp/repo/$SELF_NAME" ] || die "远端仓库里没有 $SELF_NAME（可能尚未推送）"
   ALIDOCS_BOOTSTRAPPED=1 export ALIDOCS_BOOTSTRAPPED
-  exec sh "$_tmp/repo/$SELF_NAME" "$@"
+  # 用保存的原始参数重跑（此时 $@ 已被解析循环 shift 空）
+  eval "exec sh \"$_tmp/repo/$SELF_NAME\" $ORIG_ARGS"
 }
+
+# 保存原始参数，供自举 re-exec 原样传递（解析循环会 shift 掉 $@）
+ORIG_ARGS=""
+for _a in "$@"; do
+  ORIG_ARGS="$ORIG_ARGS \"$_a\""
+done
 
 while [ $# -gt 0 ]; do
   case "$1" in
