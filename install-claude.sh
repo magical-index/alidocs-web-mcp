@@ -74,6 +74,17 @@ done
 
 command -v claude >/dev/null 2>&1 || die "未找到 claude CLI。请先安装 Claude Code。"
 
+# 若要装 skill 且不在仓库内，先自举——必须早于 MCP 块，否则 re-exec 会让 MCP 步骤跑两遍。
+if [ "$DO_SKILL" -eq 1 ]; then
+  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  SRC="$SCRIPT_DIR/skills/$SKILL"
+  if [ ! -f "$SRC/SKILL.md" ] && command -v npm >/dev/null 2>&1; then
+    CANDIDATE="$(npm root -g 2>/dev/null)/$PKG/skills/$SKILL"
+    [ -f "$CANDIDATE/SKILL.md" ] && SRC="$CANDIDATE"
+  fi
+  [ -f "$SRC/SKILL.md" ] || bootstrap_from_repo
+fi
+
 printf '\n%s\n\n' "${C_BOLD}alidocs-web-mcp · Claude Code${C_RESET}"
 
 # ---- MCP -------------------------------------------------------------------
@@ -99,13 +110,6 @@ fi
 
 # ---- Skill -----------------------------------------------------------------
 if [ "$DO_SKILL" -eq 1 ]; then
-  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-  SRC="$SCRIPT_DIR/skills/$SKILL"
-  if [ ! -f "$SRC/SKILL.md" ] && command -v npm >/dev/null 2>&1; then
-    CANDIDATE="$(npm root -g 2>/dev/null)/$PKG/skills/$SKILL"
-    [ -f "$CANDIDATE/SKILL.md" ] && SRC="$CANDIDATE"
-  fi
-  [ -f "$SRC/SKILL.md" ] || bootstrap_from_repo "$@"
   if [ ! -f "$SRC/SKILL.md" ]; then
     warn "找不到 skill 源（$SCRIPT_DIR/skills/${SKILL}）。跳过 skill 安装。"
   elif [ -e "$SKILLS_DIR/$SKILL" ] && [ "$FORCE" -eq 0 ]; then
