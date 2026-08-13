@@ -44,15 +44,32 @@
 
 ## 安装与运行
 
-**一键安装**（校验 Node、预热 npx 缓存、注册 MCP server）：
+**一键安装**。两个脚本都需要仓库内容（skill 源在 `skills/`），所以先 clone：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh
-# 允许写工具：
-curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh -s -- --allow-write
+git clone https://github.com/magical-index/alidocs-web-mcp.git
+cd alidocs-web-mcp
 ```
 
-检测到 `claude` CLI 时会自动注册进 **Claude Code**（`claude mcp add --scope user`），并为 **Qoder** 打印可直接粘贴的 JSON 片段（Settings → MCP → **+ Add**）。更多选项见 `install.sh --help`（`--name`、`--force`、`--skip-verify`）。
+**Qoder**——一个插件同时装好 MCP server 与 skill：
+
+```bash
+./install-qoder.sh                    # 从 skills/ 生成插件并安装（user scope）
+./install-qoder.sh <plugin.zip>       # 拿到现成插件包时用这个
+./install-qoder.sh --pack-only        # 只打包，不安装
+```
+
+装完在 Qoder 里执行 `/plugins reload` 生效。仓库里**不存放**插件目录，脚本按需生成到 `~/.alidocs-web-mcp/plugin/`。注意 `qodercli plugin install` **只接受目录、不接受 zip**，传 zip 给脚本由它代为解压。
+
+**Claude Code**——它的 `plugin install` 只认 marketplace、清单格式也与 Qoder 不同，所以分两步各装一半（MCP 走 `claude mcp add`，skill 拷到 `~/.claude/skills/`）：
+
+```bash
+./install-claude.sh                   # MCP + skill 都装
+./install-claude.sh --mcp-only        # 只装 MCP
+./install-claude.sh --force           # 覆盖已存在的配置
+```
+
+两个脚本都支持 `--dry-run`（只打印将执行的命令）与 `--force`，且已存在时默认跳过而不静默覆盖。它们注册的都是 `npx -y … --port 0 --allow-write`：用 `npx` 是为了跟随包更新（全局安装的桥不会自动升），`--port 0` 的理由见[同时跑多个-agent](#同时跑多个-agent)。
 
 或手动注册到你的 MCP host，无需全局安装：
 
@@ -61,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/
   "mcpServers": {
     "alidocs-web-mcp": {
       "command": "npx",
-      "args": ["-y", "@magical-index/alidocs-web-mcp", "--allow-write"]
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--port", "0", "--allow-write"]
     }
   }
 }
@@ -78,7 +95,7 @@ npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工�
 
 ### 同时跑多个 Agent
 
-每个 Agent 宿主都会各起一个桥，三个固定端口很快就不够用——第四个启动直接报 `PORT_CONTENDED`；更麻烦的是页面只能发现占住第一个端口的那个桥。加 `--port 0` 让 OS 分配一个空闲的临时端口即可，端口已写在配对码里，其余什么都不用改：
+每个 Agent 宿主都会各起一个桥，三个固定端口很快就不够用——第四个启动直接报 `PORT_CONTENDED`，对 host 而言就是 stdio 被关、显示「Connection closed」，看着像装错了。加 `--port 0` 让 OS 分配一个空闲的临时端口即可，端口已写在配对码里，其余什么都不用改：
 
 ```json
 {
@@ -91,39 +108,19 @@ npx -y @magical-index/alidocs-web-mcp --allow-write # 允许页面注册写工�
 }
 ```
 
-前提是**桥 ≥ 0.2.0**，且页面侧连接器认识这种复合码。老版本的桥只下发裸 secret，页面会退回逐个探候选端口——正是你想躲开的那种争抢。注意**全局安装的桥不会像 `npx -y` 那样自动更新**，需要显式升级：
+**上面两个安装脚本已经默认这么配了**，手写配置才需要自己加。前提是**桥 ≥ 0.2.0**，且页面侧连接器认识这种复合码；老版本的桥只下发裸 secret，页面会退回逐个探候选端口——正是你想躲开的那种争抢。注意**全局安装的桥不会像 `npx -y` 那样自动更新**，需要显式升级：
 
 ```bash
 npm i -g @magical-index/alidocs-web-mcp@latest
 ```
 
-### 配套 skill（可选，需手动安装）
+### 配套 skill
 
-`skills/alidocs-edit-routing/` 是一份 Agent Skill：改已有钉钉文字文档前，让 agent 先问你走「dws 直改」还是「本桥建议态」，而不是闷头选一条直接落盘。它随 npm 包发布，但**不会自动生效**——得自己放到 host 的 skills 目录。
+`skills/alidocs-edit-routing/` 是一份 Agent Skill：改已有钉钉文字文档前，让 agent 先问你走「dws 直改」还是「本桥建议态」，而不是闷头选一条直接落盘。
 
-各 host 都是「一个目录一个 skill」，且**目录名必须与 `SKILL.md` 里的 `name` 一致**：
+**上面的安装脚本已经把它一并装了**，Qoder 走插件、Claude Code 拷到 `~/.claude/skills/`。想手动放到其它 host（如 Codex 的 `~/.agents/skills/`）时，把整个目录拷过去即可，**目录名必须与 `SKILL.md` 里的 `name` 一致**。
 
-| Host | skills 目录 |
-| --- | --- |
-| Claude Code | `~/.claude/skills/` |
-| Codex | `~/.agents/skills/` |
-| Qoder | `~/.qoder/skills/` |
-
-从已全局安装的包里软链（推荐：升包后 skill 跟着更新）：
-
-```bash
-SKILL="$(npm root -g)/@magical-index/alidocs-web-mcp/skills/alidocs-edit-routing"
-ln -s "$SKILL" ~/.claude/skills/alidocs-edit-routing
-```
-
-用 `npx -y` 跑桥的没有稳定的本地包路径，从仓库取：
-
-```bash
-git clone https://github.com/magical-index/alidocs-web-mcp.git
-ln -s "$PWD/alidocs-web-mcp/skills/alidocs-edit-routing" ~/.claude/skills/alidocs-edit-routing
-```
-
-两件事需要注意：**新开一个会话才生效**（host 在会话启动时读 skills 目录）；它把 `dws` 当作前置 skill，没有 dws 时「直改」那条通道走不通。若你装的包版本早于该目录引入，`skills/` 不存在，请升级或直接从仓库取。
+两件事需要注意：**新开一个会话才生效**（host 在会话启动时读 skills 目录）；它把 `dws` 当作前置 skill，没有 dws 时「直改」那条通道走不通。
 
 ## 配对流程
 

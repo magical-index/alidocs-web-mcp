@@ -44,15 +44,32 @@ The capability you actually want — structured, block-level editing that render
 
 ## Install & run
 
-**One-click install** (checks Node, warms the npx cache, registers the MCP server):
+**One-click install.** Both scripts need repository content (the skill source lives in `skills/`), so clone first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh
-# allow write tools:
-curl -fsSL https://raw.githubusercontent.com/magical-index/alidocs-web-mcp/main/install.sh | sh -s -- --allow-write
+git clone https://github.com/magical-index/alidocs-web-mcp.git
+cd alidocs-web-mcp
 ```
 
-It auto-registers into **Claude Code** (`claude mcp add --scope user`) when the `claude` CLI is present, and prints a paste-ready JSON snippet for **Qoder** (Settings → MCP → **+ Add**). Run `install.sh --help` for options (`--name`, `--force`, `--skip-verify`).
+**Qoder** — one plugin installs the MCP server and the skill together:
+
+```bash
+./install-qoder.sh                    # generate the plugin from skills/ and install it (user scope)
+./install-qoder.sh <plugin.zip>       # use a prebuilt plugin package
+./install-qoder.sh --pack-only        # only build the package, do not install
+```
+
+Run `/plugins reload` in Qoder afterwards. The repository does **not** carry a plugin directory; the script generates one into `~/.alidocs-web-mcp/plugin/` on demand. Note that `qodercli plugin install` accepts **a directory, not a zip** — hand the zip to the script and it unpacks it for you.
+
+**Claude Code** — its `plugin install` only resolves marketplaces and its manifest format differs from Qoder's, so the two halves are installed separately (MCP via `claude mcp add`, skill copied into `~/.claude/skills/`):
+
+```bash
+./install-claude.sh                   # MCP + skill
+./install-claude.sh --mcp-only        # MCP only
+./install-claude.sh --force           # overwrite an existing configuration
+```
+
+Both scripts support `--dry-run` (print the commands without running them) and `--force`, and skip rather than silently overwrite when something already exists. Both register `npx -y … --port 0 --allow-write`: `npx` so the bridge follows package updates (a global install never upgrades itself), and `--port 0` for the reason in [Several agents at once](#several-agents-at-once).
 
 Or register it with your MCP host manually — no global install needed:
 
@@ -61,7 +78,7 @@ Or register it with your MCP host manually — no global install needed:
   "mcpServers": {
     "alidocs-web-mcp": {
       "command": "npx",
-      "args": ["-y", "@magical-index/alidocs-web-mcp", "--allow-write"]
+      "args": ["-y", "@magical-index/alidocs-web-mcp", "--port", "0", "--allow-write"]
     }
   }
 }
@@ -78,7 +95,7 @@ By default the bridge tries ports **19837 → 19838 → 19839** and takes the fi
 
 ### Several agents at once
 
-Every agent host starts its own bridge, so three fixed ports run out quickly — the fourth start fails with `PORT_CONTENDED`, and worse, the pages can only ever discover whoever holds the first port. Pass `--port 0` to let the OS hand out a free ephemeral port; the pairing code carries it, so nothing else changes:
+Every agent host starts its own bridge, so three fixed ports run out quickly — the fourth start fails with `PORT_CONTENDED`, which the host sees as stdio closing and reports as "Connection closed", making it look like a bad install. Pass `--port 0` to let the OS hand out a free ephemeral port; the pairing code carries it, so nothing else changes:
 
 ```json
 {
@@ -91,39 +108,19 @@ Every agent host starts its own bridge, so three fixed ports run out quickly —
 }
 ```
 
-This needs **bridge ≥ 0.2.0** together with a page connector that understands the composite code. An older bridge hands out a bare secret, and the page then falls back to probing the candidate ports — exactly the contention you were trying to escape. Note that a *globally installed* bridge does not refresh itself the way `npx -y` does, so upgrade it explicitly:
+**Both install scripts above already do this**; only hand-written configs need to add it. This needs **bridge ≥ 0.2.0** together with a page connector that understands the composite code; an older bridge hands out a bare secret, and the page then falls back to probing the candidate ports — exactly the contention you were trying to escape. Note that a *globally installed* bridge does not refresh itself the way `npx -y` does, so upgrade it explicitly:
 
 ```bash
 npm i -g @magical-index/alidocs-web-mcp@latest
 ```
 
-### Companion skill (optional, manual install)
+### Companion skill
 
-`skills/alidocs-edit-routing/` is an Agent Skill: before changing an existing DingTalk text document, it makes the agent ask you whether to go through **dws direct write** or **this bridge's suggestion mode**, instead of silently picking one and committing. It ships inside the npm package but **does not activate on its own** — you have to drop it into your host's skills directory.
+`skills/alidocs-edit-routing/` is an Agent Skill: before changing an existing DingTalk text document, it makes the agent ask you whether to go through **dws direct write** or **this bridge's suggestion mode**, instead of silently picking one and committing.
 
-Every host uses one directory per skill, and the **directory name must match the `name` in `SKILL.md`**:
+**The install scripts above already set it up** — Qoder gets it through the plugin, Claude Code gets a copy in `~/.claude/skills/`. To place it manually in another host (for example Codex's `~/.agents/skills/`), copy the whole directory over; the **directory name must match the `name` in `SKILL.md`**.
 
-| Host | Skills directory |
-| --- | --- |
-| Claude Code | `~/.claude/skills/` |
-| Codex | `~/.agents/skills/` |
-| Qoder | `~/.qoder/skills/` |
-
-Symlink it out of a global install (recommended — the skill then follows package upgrades):
-
-```bash
-SKILL="$(npm root -g)/@magical-index/alidocs-web-mcp/skills/alidocs-edit-routing"
-ln -s "$SKILL" ~/.claude/skills/alidocs-edit-routing
-```
-
-If you run the bridge via `npx -y` there is no stable local package path — take it from the repo instead:
-
-```bash
-git clone https://github.com/magical-index/alidocs-web-mcp.git
-ln -s "$PWD/alidocs-web-mcp/skills/alidocs-edit-routing" ~/.claude/skills/alidocs-edit-routing
-```
-
-Two things to know: it **only takes effect in a new session** (hosts read the skills directory at session start), and it treats `dws` as a prerequisite skill — without dws the "direct write" channel is not available. If the version you installed predates this directory, `skills/` will be missing; upgrade or take it from the repo.
+Two things to know: it **only takes effect in a new session** (hosts read the skills directory at session start), and it treats `dws` as a prerequisite skill — without dws the "direct write" channel is not available.
 
 ## How pairing works
 
