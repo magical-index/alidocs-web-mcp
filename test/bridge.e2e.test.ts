@@ -107,6 +107,15 @@ it('未建桥时 tools/list 只有 bridge 自有工具', async () => {
   ]);
 });
 
+it('未建桥时 resources/list 返回空资源集供宿主能力发现', async () => {
+  const env = await startTestBridge();
+  onTestFinished(() => env.stop());
+  await initializeHost(env.host);
+
+  const response = await env.host.request('resources/list', {});
+  expect(response.result).toEqual({ resources: [] });
+});
+
 it('未建桥时调用文档工具返回 isError + PAGE_NOT_CONNECTED（不挂起）', async () => {
   const env = await startTestBridge();
   onTestFinished(() => env.stop());

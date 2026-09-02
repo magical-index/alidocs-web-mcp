@@ -297,6 +297,12 @@ export class Router {
       return;
     }
 
+    // 未建桥时仍需让宿主完成已声明 resources 能力的发现。
+    if (method === 'resources/list' && !this.isPageConnected()) {
+      this.replyResult(id, { resources: [] });
+      return;
+    }
+
     // 其余一律转发（resources/* prompts/* completion/* logging/*）
     if (!this.isPageConnected()) {
       this.replyError(
